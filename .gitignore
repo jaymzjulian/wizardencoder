@@ -1,0 +1,11 @@
+*.exe
+*.raw
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.out
+*.stackdump
+*.o
+*.dll
+*.so

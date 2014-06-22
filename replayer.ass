@@ -1,0 +1,145 @@
+
+*=$3000
+
+zp2=$fc
+zp1=$fe
+
+getval	.macro
+	; then command
+	lda (zp1),y
+	iny
+	cpy #0
+	bne *+4
+	inc zp1+1
+.endmacro
+
+omgponies
+	lda #0
+	sta $d020
+	sta $d021
+	lda #0
+	ldx #24
+sidResetLoop
+	sta $d400,x
+	dex
+	bne sidResetLoop
+
+	; initial sid as per encoder
+	lda #15
+	sta $d418
+	lda #8
+	sta $d403
+	sta $d403+7
+	sta $d403+14
+
+	lda #<alldata
+	sta zp1
+	lda #>alldata
+	sta zp1+1
+
+	; iterate through data!
+	ldy #0
+sidread
+	lda #$f3
+rasterloop
+	cmp $d012
+	bne rasterloop
+	inc $d020
+gotime
+	; first channel - put the channel base into x
+	; for now
+	getval
+	; get out on $ff as first byte!
+	cmp #$ff
+	beq alldone
+	tax
+	lda channeloff,x
+	tax
+
+	; now the command
+	getval
+
+	; set_ad
+	cmp #0
+	beq set_ad
+	cmp #1
+	beq set_sr	
+	cmp #2
+	beq set_freq
+	cmp #3
+	beq set_ctrl
+	cmp #4
+	beq set_pw
+
+ohnoloop
+	inc $d020
+	jmp ohnoloop
+
+finishcommand
+	jmp gotime
+alldone
+	dec $d020
+	jmp sidread
+
+set_ad
+	getval
+	sta $d405,x
+	jmp finishcommand
+set_sr
+	getval
+	sta $d406,x
+	jmp finishcommand
+set_pw
+	getval
+	sta $d403,x
+	jmp finishcommand
+
+set_freq
+	getval
+	sty zp2
+	tay
+	lda sflo,y
+	sta $d400,x
+	lda sfhi,y
+	sta $d401,x
+	ldy zp2
+	jmp finishcommand
+
+set_ctrl
+	getval
+	sty zp2
+	tay
+	cpx #0
+	bne complexCtrlJ
+	lda simpleCtrl,y
+	jmp simpleCtrlJ
+complexCtrlJ
+	lda complexCtrl,y
+simpleCtrlJ
+	sta $d404,x
+	ldy zp2
+	jmp finishcommand
+
+simpleCtrl
+	.byte $10,$20,$40,$80
+	.byte $11,$21,$41,$81
+
+complexCtrl
+        .byte $10, $20, $40, $80
+        .byte $11, $21, $41, $81
+        .byte $12, $22, $42, $82
+        .byte $13, $23, $43, $83
+        .byte $14, $24, $44, $84
+        .byte $15, $25, $45, $85
+
+
+channeloff
+	.byte 0
+	.byte 7
+	.byte 14
+
+.include "freqtable.ass"
+
+alldata
+.include "siddata.asm"
+
