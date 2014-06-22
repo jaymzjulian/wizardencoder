@@ -70,8 +70,8 @@ int maxIter=8;
 
 // WRONG WRONG WRONG
 int palFrame;
-fftw_complex *srcIn[MAXTHREADS], *srcOut[MAXTHREADS], *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
-fftw_plan srcPlan[MAXTHREADS], dstPlan[MAXTHREADS];
+fftw_complex *srcIn, *srcOut, *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
+fftw_plan srcPlan, dstPlan[MAXTHREADS];
 
 #define NUMCOMMANDS 5
 
@@ -254,6 +254,27 @@ void fullyRandomPop(sidOutput &currentSid) {
 	std::sort(currentSid.s, currentSid.s+OPERATORS, opSort);
 
 }
+
+// Do the src FFT once
+void setupSrcGlobal() {
+#ifdef MEASUREINDIVIDUAL
+	for(int cframe=0;cframe<FRAMERANGE;cframe++)
+#endif
+	{
+		for(int c=0;c<FFTSAMPLES;c++) {
+#ifdef MEASUREINDIVIDUAL
+			srcIn[c][0]=((double)inputBuffer[(cframe*FRAMESAMPLES)+((c*FFTSCALERATE)>>8)])*INPUTAMP;
+#else
+			srcIn[c][0]=((double)inputBuffer[(c*FFTSCALERATE)>>8])*INPUTAMP;
+#endif
+			srcIn[c][1]=0;
+			// noramalise
+			srcIn[c][0]/=32768.0;
+		}
+	}
+	fftw_execute(srcPlan);
+}
+
 double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 	// IMPORTANT: push sid, THEN call resid!
 	int t=omp_get_thread_num();
@@ -273,22 +294,17 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 	{
 		for(int c=0;c<FFTSAMPLES;c++) {
 #ifdef MEASUREINDIVIDUAL
-			srcIn[t][c][0]=((double)inputBuffer[(cframe*FRAMESAMPLES)+((c*FFTSCALERATE)>>8)])*INPUTAMP;
 			dstIn[t][c][0]=workBuffer[t][(cframe*FRAMESAMPLES)+(((c*FFTSCALERATE)/SPEEDSCALE)>>8)];
 #else
-			srcIn[t][c][0]=((double)inputBuffer[(c*FFTSCALERATE)>>8])*INPUTAMP;
 			dstIn[t][c][0]=workBuffer[t][((c*FFTSCALERATE)/SPEEDSCALE)>>8];
 #endif
 
-			srcIn[t][c][1]=0;
 			dstIn[t][c][1]=0;
 
 			// normalise
-			srcIn[t][c][0]/=32768.0;
 			dstIn[t][c][0]/=32768.0;
 		}
 
-		fftw_execute(srcPlan[t]);
 		fftw_execute(dstPlan[t]);
 
 		for(int c=1;c<FFTSAMPLES/2;c++) {
@@ -299,8 +315,8 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 
 			// This is wrong, but for some reason i think the
 			// other is too, so it can stay here as a comment
-			double ia=srcOut[t][c][0]-dstOut[t][c][0];
-			double ib=srcOut[t][c][1]-dstOut[t][c][1];
+			double ia=srcOut[c][0]-dstOut[t][c][0];
+			double ib=srcOut[c][1]-dstOut[t][c][1];
 			loss+=(ia*ia)+(ib*ib);
 		}
 	}
@@ -320,14 +336,12 @@ int main(int argc, char **argv) {
 		printf("Usage: %s [infile.raw] [outfile.asm]\n", argv[0], argv[1]);
 		exit(1);
 	}
+	srcIn=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
+	srcOut=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
+	srcPlan=fftw_plan_dft_1d(FFTSAMPLES, srcIn, srcOut, FFTW_FORWARD, FFTW_MEASURE);
 	for(int t=0;t<omp_get_max_threads();t++)
 	{
-	srcIn[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
 	dstIn[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
-
-	srcOut[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
-	srcPlan[t]=fftw_plan_dft_1d(FFTSAMPLES, srcIn[t], srcOut[t], FFTW_FORWARD, FFTW_MEASURE);
-
 	dstOut[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
 	dstPlan[t]=fftw_plan_dft_1d(FFTSAMPLES, dstIn[t], dstOut[t], FFTW_FORWARD, FFTW_MEASURE);
 	workBuffer[t]=(short *)malloc(131072*sizeof(short));
@@ -386,6 +400,8 @@ int main(int argc, char **argv) {
 		SID::State baseState=outSid.read_state();
 		int baseCycle=cycle;
 		int allCtrls[4]={0x0,0x2,0x4,0x6};
+
+		setupSrcGlobal();
 
 		// do initial pop
 		for(int c=0;c<POPSIZE;c++)
