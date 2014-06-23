@@ -13,62 +13,53 @@
 #define DEDUPEOP
 
 #define MAXTHREADS 32
+#define MAXOPERATORS 32
+//#define MEASUREINDIVIDUAL
+//#define BENCHMARK (100/frameRange)
+#undef FUNKYCTRL
 
-#define NUMCHANNELS 3
 
-#define MEASUREINDIVIDUAL
+// sensble defaults
+int numChannels=3;
+int maxIter=2;
+double inputAmp=1.0;
+int frameRange=1;
+int popSize=1024;
+int eliteSize=64;
+int numOperators=4*frameRange;
 
 using namespace reSID;
 short *outputBuffer;
 short *inputBuffer;
 short *workBuffer[MAXTHREADS];
 
-// benctime:
-// 13 seconds for '2'
-// 25 seconds for '4'
-int maxIter=8;
-
-#define INPUTAMP 1.0
-
-// 13 seconds for '1'
-// 24 seconds for '2' (doubles OPERATORS, POPSIZE!)
-#define FRAMERANGE 1
-
 // Benchtime:
 // 13 seconds for '4'
 // 20 seconds for '2'
 // 30 seconds for '1'
-#define SPEEDSCALE 4
-
-#undef FUNKYCTRL
+int speedScale=1;
 
 
-//#define BENCHMARK (100/FRAMERANGE)
+
 
 #define FREQSCALE 3
 
-#define POPSIZE (1024*FRAMERANGE)
-#define KEEPSIZE (64*FRAMERANGE)
-#define THROWAWAY (POPSIZE-KEEPSIZE)
+#define THROWAWAY (popSize-eliteSize)
+
+#define GSIZE (numOperators*sizeof(struct so))
 
 
 #define PALFRAME 19656
 
 #ifndef MEASUREINDIVIDUAL
-	#define FRAMESAMPLES (879*FRAMERANGE)
-	#define FFTSAMPLES (((1024*FRAMERANGE)/SPEEDSCALE))
+	#define FRAMESAMPLES (879*frameRange)
+	#define FFTSAMPLES (((1024*frameRange)/speedScale))
 #else
 	#define FRAMESAMPLES (879)
-	#define FFTSAMPLES (((1024)/SPEEDSCALE))
+	#define FFTSAMPLES (((1024)/speedScale))
 #endif
 #define FFTSCALERATE ((256*FRAMESAMPLES)/FFTSAMPLES)
 
-// 4 operators per frame by default
-#define OPERATORS 4*NUMCHANNELS*FRAMERANGE
-
-
-
-// WRONG WRONG WRONG
 int palFrame;
 fftw_complex *srcIn, *srcOut, *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
 fftw_plan srcPlan, dstPlan[MAXTHREADS];
@@ -104,9 +95,12 @@ typedef unsigned char byte;
 	};
 
 // we're going to pack the shit out of this instead
+// FIXME: obviously, this should not be statically defined,
+// but instead an object that takes a new or whatever - but 
+// for now, this will do...
 union sidOutput {
-	struct so s[OPERATORS];
-	byte gval[OPERATORS*sizeof(struct so)];
+	struct so s[MAXOPERATORS];
+	byte gval[MAXOPERATORS*sizeof(struct so)];
 };
 
 struct gpop {
@@ -130,8 +124,8 @@ byte possibleCtrl[]={
 
 void writeAsm(FILE *outasm, sidOutput o)
 {
-	for(int cframe=0;cframe<FRAMERANGE;cframe++) {
-		for(int c=0;c<OPERATORS;c++)
+	for(int cframe=0;cframe<frameRange;cframe++) {
+		for(int c=0;c<numOperators;c++)
 		{
 			if(o.s[c].frame==cframe){
 				int baseChannel=o.s[c].channel;
@@ -147,7 +141,7 @@ void writeAsm(FILE *outasm, sidOutput o)
 
 void pushSid(sidOutput o, SID &testSid, int f)
 {
-	for(int c=0;c<OPERATORS;c++)
+	for(int c=0;c<numOperators;c++)
 	{
 		if(o.s[c].frame==f) {
 		int baseChannel=o.s[c].channel;
@@ -210,16 +204,16 @@ void filterSingle(sidOutput &currentSid, int c) {
 		}
 		if(currentSid.s[c].command==set_pw)
 			currentSid.s[c].value%=8;
-		currentSid.s[c].frame%=FRAMERANGE;
+		currentSid.s[c].frame%=frameRange;
 		currentSid.s[c].command%=NUMCOMMANDS;
 #ifdef DEDUPEOP
-		for(int d=0;d<OPERATORS;d++)
+		for(int d=0;d<numOperators;d++)
 		{
 			if(c!=d) {
 				if(currentSid.s[c].frame == currentSid.s[d].frame && currentSid.s[c].command == currentSid.s[d].command && currentSid.s[c].channel==currentSid.s[d].channel) {
 					currentSid.s[c].command=rand()%NUMCOMMANDS;
-					currentSid.s[c].channel=rand()%NUMCHANNELS;
-					currentSid.s[c].frame=rand()%FRAMERANGE;
+					currentSid.s[c].channel=rand()%numChannels;
+					currentSid.s[c].frame=rand()%frameRange;
 					filterSingle(currentSid, c);
 				}
 			}
@@ -229,43 +223,43 @@ void filterSingle(sidOutput &currentSid, int c) {
 }
 
 void filterValues(sidOutput &currentSid) {
-	for(int c=0;c<OPERATORS;c++) {
+	for(int c=0;c<numOperators;c++) {
 		filterSingle(currentSid, c);
 	}	
 }
 
 void singleRandom(sidOutput &currentSid, int c) {
-	currentSid.s[c].frame=rand()%FRAMERANGE;
+	currentSid.s[c].frame=rand()%frameRange;
 	currentSid.s[c].command=rand()%NUMCOMMANDS;
-	currentSid.s[c].channel=rand()%NUMCHANNELS;
+	currentSid.s[c].channel=rand()%numChannels;
 	currentSid.s[c].value=rand()%256;
 	filterSingle(currentSid, c);
 }
 
 void fullyRandomPop(sidOutput &currentSid) {
-	for(int c=0;c<OPERATORS;c++) {
-		currentSid.s[c].frame=rand()%FRAMERANGE;
+	for(int c=0;c<numOperators;c++) {
+		currentSid.s[c].frame=rand()%frameRange;
 		currentSid.s[c].command=rand()%NUMCOMMANDS;
-		currentSid.s[c].channel=rand()%NUMCHANNELS;
+		currentSid.s[c].channel=rand()%numChannels;
 		currentSid.s[c].value=rand()%256;
 	}
 	filterValues(currentSid);
 	// help it along a little!
-	std::sort(currentSid.s, currentSid.s+OPERATORS, opSort);
+	std::sort(currentSid.s, currentSid.s+numOperators, opSort);
 
 }
 
 // Do the src FFT once
 void setupSrcGlobal() {
 #ifdef MEASUREINDIVIDUAL
-	for(int cframe=0;cframe<FRAMERANGE;cframe++)
+	for(int cframe=0;cframe<frameRange;cframe++)
 #endif
 	{
 		for(int c=0;c<FFTSAMPLES;c++) {
 #ifdef MEASUREINDIVIDUAL
-			srcIn[c][0]=((double)inputBuffer[(cframe*FRAMESAMPLES)+((c*FFTSCALERATE)>>8)])*INPUTAMP;
+			srcIn[c][0]=((double)inputBuffer[(cframe*FRAMESAMPLES)+((c*FFTSCALERATE)>>8)])*inputAmp;
 #else
-			srcIn[c][0]=((double)inputBuffer[(c*FFTSCALERATE)>>8])*INPUTAMP;
+			srcIn[c][0]=((double)inputBuffer[(c*FFTSCALERATE)>>8])*inputAmp;
 #endif
 			srcIn[c][1]=0;
 			// noramalise
@@ -281,7 +275,7 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 	int genSmpl=0;
 	int cycle=baseCycle;
 	double loss=0;
-	for(int cframe=0;cframe<FRAMERANGE;cframe++) {
+	for(int cframe=0;cframe<frameRange;cframe++) {
 		pushSid(currentSid, testSid, cframe);
 		cycle+=palFrame;
 		genSmpl+=testSid.clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
@@ -289,14 +283,14 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 
 	// compare samples because fuck everything
 #ifdef MEASUREINDIVIDUAL
-	for(int cframe=0;cframe<FRAMERANGE;cframe++)
+	for(int cframe=0;cframe<frameRange;cframe++)
 #endif
 	{
 		for(int c=0;c<FFTSAMPLES;c++) {
 #ifdef MEASUREINDIVIDUAL
-			dstIn[t][c][0]=workBuffer[t][(cframe*FRAMESAMPLES)+(((c*FFTSCALERATE)/SPEEDSCALE)>>8)];
+			dstIn[t][c][0]=workBuffer[t][(cframe*FRAMESAMPLES)+(((c*FFTSCALERATE)/speedScale)>>8)];
 #else
-			dstIn[t][c][0]=workBuffer[t][((c*FFTSCALERATE)/SPEEDSCALE)>>8];
+			dstIn[t][c][0]=workBuffer[t][((c*FFTSCALERATE)/speedScale)>>8];
 #endif
 
 			dstIn[t][c][1]=0;
@@ -333,7 +327,7 @@ int main(int argc, char **argv) {
 	printf("FFTSCALERATE: %d\n", FFTSCALERATE);
 	if(argc<3)
 	{
-		printf("Usage: %s [infile.raw] [outfile.asm]\n", argv[0], argv[1]);
+		printf("Usage: %s [infile.raw] [outfile.asm] [encoderconfig.ini]\n", argv[0], argv[1]);
 		exit(1);
 	}
 	srcIn=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
@@ -360,7 +354,7 @@ int main(int argc, char **argv) {
 	{
 	testSid[t].enable_filter(false);
 	testSid[t].reset();
-	testSid[t].set_sampling_parameters(985248, SAMPLE_FAST, 44100/SPEEDSCALE);
+	testSid[t].set_sampling_parameters(985248, SAMPLE_FAST, 44100/speedScale);
 	testSid[t].write(3, 0x08);
 	testSid[t].write(3+7, 0x08);
 	testSid[t].write(0x18, 15);
@@ -382,7 +376,7 @@ int main(int argc, char **argv) {
 	FILE *fml=fopen("output.raw", "wb");
 	FILE *ref=fopen("referece.raw", "wb");
 	FILE *outasm=fopen(argv[2], "wt");
-	fseek(inputFile, 88200*10, 0);
+	//fseek(inputFile, 88200*10, 0);
 
 	int readLen;
 	int cycle=0;
@@ -394,17 +388,18 @@ int main(int argc, char **argv) {
 #endif
 		printf("Read: %d\n", readLen);
 		double bestLoss=9999999999;
-		struct gpop mypop[POPSIZE];
+		struct gpop mypop[popSize];
 		sidOutput bestSid;
 		sidOutput currentSid;
 		SID::State baseState=outSid.read_state();
 		int baseCycle=cycle;
 		int allCtrls[4]={0x0,0x2,0x4,0x6};
 
+		// do the FFT and processing on the source
 		setupSrcGlobal();
 
 		// do initial pop
-		for(int c=0;c<POPSIZE;c++)
+		for(int c=0;c<popSize;c++)
 		{
 			if(frameCount==0 || c>THROWAWAY) {
 			fullyRandomPop(mypop[c].population);
@@ -413,7 +408,7 @@ int main(int argc, char **argv) {
 		
 		/* parallel test fitness */
 #pragma omp parallel for shared(baseState,mypop,testSid)
-		for(int c=0;c<POPSIZE;c++)
+		for(int c=0;c<popSize;c++)
 		{
 			int t=omp_get_thread_num();
 #ifdef FUNKYCTRL
@@ -443,30 +438,30 @@ int main(int argc, char **argv) {
 
 		memset(&bestSid, 0, sizeof(bestSid));
 		printf("go - %d\n", maxIter);
-		std::sort(mypop, mypop+POPSIZE, sfunc);
+		std::sort(mypop, mypop+popSize, sfunc);
 		double bf=mypop[0].fitness;
 		for(int i=0;i<maxIter;i++)
 		{
 			//printf("Best: %f\n", mypop[0].fitness);
 			// sort the population
-			std::sort(mypop, mypop+POPSIZE, sfunc);
+			std::sort(mypop, mypop+popSize, sfunc);
 			if(mypop[0].fitness < bf)
 			{
 				bf=mypop[0].fitness;
-				printf("BF: %f (%d) (%d)\n", bf, i, sizeof(mypop[0].population.gval));
+				printf("BF: %f (%d) (%d)\n", bf, i, GSIZE);
 				//printf("%x\n", possibleCtrl[mypop[0].population.s.ctrl2%sizeof(possibleCtrl)]);
 				i=0;
 			}
 
 			// replace the bottom half - seperate this so it's non-parallel
-			for(int c=KEEPSIZE;c<POPSIZE;c++)
+			for(int c=eliteSize;c<popSize;c++)
 			{
 				int splitPoint=rand()%(sizeof(sidOutput)*8);
-				//int p1=rand()%POPSIZE;
-				//int p2=rand()%POPSIZE;
-				int p1=rand()%KEEPSIZE;
-				int p2=rand()%KEEPSIZE;
-				for(int bit=0;bit<sizeof(mypop[c].population.gval)*8;bit++)
+				//int p1=rand()%popSize;
+				//int p2=rand()%popSize;
+				int p1=rand()%eliteSize;
+				int p2=rand()%eliteSize;
+				for(int bit=0;bit<GSIZE*8;bit++)
 				{
 					int cbyte=bit>>3;
 					int cbit=bit&7;
@@ -483,12 +478,12 @@ int main(int argc, char **argv) {
 				filterValues(mypop[c].population);
 
 				// mutate one command of each of these
-				int randBit=rand()%OPERATORS;
+				int randBit=rand()%numOperators;
 				singleRandom(mypop[c].population, randBit);
 			}
 
 #pragma omp parallel for shared(baseState,mypop,testSid)
-			for(int c=KEEPSIZE;c<POPSIZE;c++)
+			for(int c=eliteSize;c<popSize;c++)
 			{
 				int t=omp_get_thread_num();
 #ifdef FUNKYCTRL
@@ -517,11 +512,11 @@ int main(int argc, char **argv) {
 		}
 		printf("PCOMPLETE\n");
 		// final sort the population
-		std::sort(mypop, mypop+POPSIZE, sfunc);
-		std::sort(mypop[0].population.s, mypop[0].population.s+OPERATORS, opSort);
+		std::sort(mypop, mypop+popSize, sfunc);
+		std::sort(mypop[0].population.s, mypop[0].population.s+numOperators, opSort);
 		bestSid=mypop[0].population;
 		printf("Fitness:%f\n", mypop[0].fitness);
-		for(int c=0;c<OPERATORS;c++)
+		for(int c=0;c<numOperators;c++)
 		{
 			int cval=mypop[0].population.s[c].value;
 			if(mypop[0].population.s[c].command == set_ctrl)
@@ -538,13 +533,13 @@ int main(int argc, char **argv) {
 		outSid.write_state(baseState);
 		int genSmpl=0;
 		cycle=baseCycle;
-		for(int cframe=0;cframe<FRAMERANGE;cframe++) {
+		for(int cframe=0;cframe<frameRange;cframe++) {
 			pushSid(bestSid, outSid, cframe);
 			cycle+=palFrame;
 			genSmpl+=outSid.clock(cycle, outputBuffer+genSmpl, 131072, 1);
 		}
 
-		printf("Generated %d samples (%d)\n", genSmpl, frameCount*2*FRAMERANGE);
+		printf("Generated %d samples (%d)\n", genSmpl, frameCount*2*frameRange);
 		fwrite(outputBuffer, sizeof(short), genSmpl, fml);
 		fflush(fml);
 		fwrite(inputBuffer, sizeof(short), genSmpl, ref);
