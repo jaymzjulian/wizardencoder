@@ -1,1 +1,1 @@
-g++ -O6 -Iresid encoder.cc resid/*.cc -o test -lfftw3 -fopenmp 
+g++ -O6 -Iresid -Iinih encoder.cc resid/*.cc inih/*.c -o test -lfftw3 -fopenmp 

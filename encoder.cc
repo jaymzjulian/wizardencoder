@@ -10,6 +10,8 @@
 #include <omp.h>
 #include "sid.h"
 
+#include "ini.h"
+
 #define DEDUPEOP
 
 #define MAXTHREADS 32
@@ -321,15 +323,46 @@ bool sfunc(struct gpop a, struct gpop b) {
 	return a.fitness < b.fitness;
 }
 
+static int handler(void *user, const char *section, const char *name, const char *value) {
+	#define MATCH(s, n) (strcmp(section, s)==0 && strcmp(name, n)==0)
+	if(MATCH("encoder", "maxIter"))
+		maxIter=atoi(value);
+	else if(MATCH("encoder", "inputAmp"))
+		inputAmp=atof(value);
+	else if(MATCH("encoder", "frameRange"))
+		frameRange=atoi(value);
+	else if(MATCH("encoder", "numChannels"))
+		numChannels=atoi(value);
+	else if(MATCH("encoder", "numOperators"))
+		numOperators=atoi(value);
+	else if(MATCH("search", "popSize"))
+		popSize=atoi(value);
+	else if(MATCH("search", "eliteSize"))
+		eliteSize=atoi(value);
+	else if(MATCH("speedhacks", "speedScale"))
+		speedScale=atoi(value);
+	else
+		return 0;
+	return 1;
+}
+
 int main(int argc, char **argv) {
+	if(argc<4)
+	{
+		printf("Usage: %s [infile.raw] [outfile.asm] [encoderconfig.ini]\n", argv[0]);
+		exit(1);
+	}
+	
+	printf("Config: %s\n", argv[3]);
+	if(ini_parse(argv[3], handler, NULL) < 0) {
+		printf("Could not parse %s\n", argv[3]);
+		exit(1);
+	}
+	
 	printf("Super algorythm codec v2 - %d threads\n", omp_get_max_threads());
 	printf("FFT: %d. Frame: %d\n", FFTSAMPLES, FRAMESAMPLES);
 	printf("FFTSCALERATE: %d\n", FFTSCALERATE);
-	if(argc<3)
-	{
-		printf("Usage: %s [infile.raw] [outfile.asm] [encoderconfig.ini]\n", argv[0], argv[1]);
-		exit(1);
-	}
+
 	srcIn=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
 	srcOut=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
 	srcPlan=fftw_plan_dft_1d(FFTSAMPLES, srcIn, srcOut, FFTW_FORWARD, FFTW_MEASURE);
