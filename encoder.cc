@@ -9,6 +9,7 @@
 
 #include <omp.h>
 #include "sid.h"
+#include "sidc.h"
 
 #include "ini.h"
 
@@ -150,6 +151,7 @@ void pushSid(sidOutput o, SID &testSid, int f)
 		int command=o.s[c].command;
 		int val=o.s[c].value;
 		int igate;
+		int cfreq;
 		switch(command) {
 			case set_ad:
 				testSid.write(5+baseChannel*7, val);
@@ -162,13 +164,14 @@ void pushSid(sidOutput o, SID &testSid, int f)
 				break;
 			case set_freq:
 				igate=testSid.voice[baseChannel].wave.waveform;
-				if(igate==1){
-					testSid.write(0+baseChannel*7, ((val)<<(8-(FREQSCALE-1)))&0xff);
-					testSid.write(1+baseChannel*7, ((val)>>((FREQSCALE-1)))&0xff);
-				} else {
-					testSid.write(0+baseChannel*7, ((val)<<(8-(FREQSCALE)))&0xff);
-					testSid.write(1+baseChannel*7, ((val)>>((FREQSCALE)))&0xff);
-				}
+				cfreq=sidFreq[val];
+				if(igate==1)
+					cfreq*=2;
+				if(cfreq>65535)
+					cfreq=65535;
+
+				testSid.write(0+baseChannel*7, cfreq&255);
+				testSid.write(1+baseChannel*7, cfreq>>8);
 				break;
 			case set_ctrl:
 				// only allow modulation in channel 2!
