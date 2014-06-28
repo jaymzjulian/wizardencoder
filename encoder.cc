@@ -209,7 +209,7 @@ void filterSingle(sidOutput &currentSid, int c) {
 				currentSid.s[c].value%=sizeof(possibleCtrl);
 		}
 		if(currentSid.s[c].command==set_pw)
-			currentSid.s[c].value%=8;
+			currentSid.s[c].value%=16;
 		currentSid.s[c].frame%=frameRange;
 		currentSid.s[c].command%=NUMCOMMANDS;
 #ifdef DEDUPEOP
