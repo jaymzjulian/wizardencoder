@@ -10,7 +10,7 @@
 #include <omp.h>
 #include "sid.h"
 #include "sidc.h"
-
+#include "loud.h"
 #include "ini.h"
 
 #define DEDUPEOP
@@ -35,6 +35,7 @@ using namespace reSID;
 short *outputBuffer;
 short *inputBuffer;
 short *workBuffer[MAXTHREADS];
+float *loudMult;
 
 // Benchtime:
 // 13 seconds for '4'
@@ -272,6 +273,11 @@ void setupSrcGlobal() {
 		}
 	}
 	fftw_execute(srcPlan);
+	// skip the DC offset - it'll be balls out wrong anyhow...
+	for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
+		srcOut[c][0]*=loudMult[c];
+		srcOut[c][1]*=loudMult[c];
+	}
 }
 
 double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
@@ -306,7 +312,10 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 
 		fftw_execute(dstPlan[t]);
 
-		for(int c=1;c<FFTSAMPLES/2;c++) {
+		// skip the DC offset - it'll be balls out wrong anyhow...
+		for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
+			dstOut[t][c][0]*=loudMult[c];
+			dstOut[t][c][1]*=loudMult[c];
 			//double ia=sqrt(srcOut[t][c][0]*srcOut[t][c][0]+srcOut[t][c][1]*srcOut[t][c][1]);
 			//double ib=sqrt(dstOut[t][c][0]*dstOut[t][c][0]+dstOut[t][c][1]*dstOut[t][c][1]);
 			//double myLoss=(ia-ib);
@@ -349,6 +358,40 @@ static int handler(void *user, const char *section, const char *name, const char
 	return 1;
 }
 
+void calculateLoudness() {
+	loudMult=new float[FFTSAMPLES];
+	for(int c=0;c<(FFTSAMPLES/2);c++)
+	{
+		float freq=44100.0/FFTSAMPLES;
+		freq*=c;
+		freq/=speedScale;
+
+		int bm=0;
+		float d=999;
+		// sizeof is the wrong tool here - the floats should be
+		// a vector, not an array :)
+		// also, this is terrible :)
+		for(int e=0;e<sizeof(freqTable)/sizeof(float);e++)
+		{
+			float fdif=fabs(freq-freqTable[e]);
+			if(fdif<d) {
+				d=fdif;
+				bm=e;
+			}
+		}
+
+		//printf("%f - %f\n", freq, freqTable[bm]);
+		
+		// for now, set our multiplier such that a 40db tone would be appropriate
+		// later we'll import something real!
+		float dbDif=loudnessDB[bm]-40.0;
+		float multiplier=pow(2, dbDif/10.0);
+		multiplier=1.0/multiplier;
+		//printf("%f, %f\n", dbDif, multiplier);
+		loudMult[c]=multiplier;
+	}
+}
+
 int main(int argc, char **argv) {
 	if(argc<4)
 	{
@@ -377,6 +420,8 @@ int main(int argc, char **argv) {
 	workBuffer[t]=(short *)malloc(131072*sizeof(short));
 	}
 
+	calculateLoudness();
+
 	palFrame=PALFRAME;
 
 	outputBuffer=(short *)malloc(131072*sizeof(short));
@@ -403,8 +448,6 @@ int main(int argc, char **argv) {
 	outSid.write(3, 0x08);
 	outSid.write(3+7, 0x08);
 	outSid.write(0x18, 15);
-
-
 
 
 	//FILE *inputFile=fopen("harry.raw", "rb");
