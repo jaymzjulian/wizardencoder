@@ -14,6 +14,7 @@
 #include "ini.h"
 
 #define DEDUPEOP
+//#define NOSR
 
 #define MAXTHREADS 32
 #define MAXOPERATORS 32
@@ -68,11 +69,17 @@ int palFrame;
 fftw_complex *srcIn, *srcOut, *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
 fftw_plan srcPlan, dstPlan[MAXTHREADS];
 
+#ifndef NOSR
 #define NUMCOMMANDS 5
+#else
+#define NUMCOMMANDS 4
+#endif
 
 enum commands {
 	set_ad,
+#ifndef NOSR
 	set_sr,
+#endif
 	set_freq,
 	set_ctrl,
 	set_pw
@@ -81,7 +88,9 @@ enum commands {
 const char *commandToString(int command) {
 	switch(command) {
 		case set_ad: return "set_ad";
+#ifndef NOSR
 		case set_sr: return "set_sr";
+#endif
 		case set_freq: return "set_freq";
 		case set_ctrl: return "set_ctrl";
 		case set_pw: return "set_pw";
@@ -157,11 +166,15 @@ void pushSid(sidOutput o, SID &testSid, int f)
 			case set_ad:
 				testSid.write(5+baseChannel*7, val);
 				break;
+#ifndef NOSR
 			case set_sr:
 				testSid.write(6+baseChannel*7, val);
 				break;
+#endif
 			case set_pw:
-				testSid.write(3+baseChannel*7, val);
+				//testSid.write(3+baseChannel*7, val);
+				testSid.write(3+baseChannel*7, val>>4);
+				testSid.write(2+baseChannel*7, (val<<4)&255);
 				break;
 			case set_freq:
 				igate=testSid.voice[baseChannel].wave.waveform;
@@ -208,8 +221,6 @@ void filterSingle(sidOutput &currentSid, int c) {
 			else
 				currentSid.s[c].value%=sizeof(possibleCtrl);
 		}
-		if(currentSid.s[c].command==set_pw)
-			currentSid.s[c].value%=16;
 		currentSid.s[c].frame%=frameRange;
 		currentSid.s[c].command%=NUMCOMMANDS;
 #ifdef DEDUPEOP
