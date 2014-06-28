@@ -291,6 +291,9 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 		cycle+=palFrame;
 		genSmpl+=testSid.clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
 	}
+	// some extra, just in case - more window is good window :)
+	cycle+=(palFrame/4);
+	genSmpl+=testSid.clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
 
 	// compare samples because fuck everything
 #ifdef MEASUREINDIVIDUAL
@@ -460,15 +463,17 @@ int main(int argc, char **argv) {
 	int readLen;
 	int cycle=0;
 	int frameCount=0;
+	int bufferOffset=0;
+	int windowSize=FRAMESAMPLES*2;
 #ifdef BENCHMARK
 	while(readLen=fread(inputBuffer, sizeof(short), FRAMESAMPLES, inputFile) && frameCount<BENCHMARK) {
 #else
-	while(readLen=fread(inputBuffer, sizeof(short), FRAMESAMPLES, inputFile)) {
+	while(readLen=fread(inputBuffer+bufferOffset, sizeof(short), windowSize-bufferOffset, inputFile)) {
 #endif
+		bufferOffset+=readLen;
 		printf("Read: %d\n", readLen);
 		double bestLoss=9999999999;
 		struct gpop mypop[popSize];
-		sidOutput bestSid;
 		sidOutput currentSid;
 		SID::State baseState=outSid.read_state();
 		int baseCycle=cycle;
@@ -497,7 +502,7 @@ int main(int argc, char **argv) {
 				mypop[c].population.s.ctrl2&0xf9;
 				mypop[c].population.s.ctrl2|allCtrls[ctype];
 
-				testSid[0].write_state(baseState);
+				testSid[t].write_state(baseState);
 				mypop[c].fitness=testFitness(testSid[t], mypop[c].population, baseCycle);
 				if(mypop[c].fitness < bp) {
 					cnum=ctype;
@@ -515,7 +520,6 @@ int main(int argc, char **argv) {
 		
 
 
-		memset(&bestSid, 0, sizeof(bestSid));
 		printf("go - %d\n", maxIter);
 		std::sort(mypop, mypop+popSize, sfunc);
 		double bf=mypop[0].fitness;
@@ -593,7 +597,6 @@ int main(int argc, char **argv) {
 		// final sort the population
 		std::sort(mypop, mypop+popSize, sfunc);
 		std::sort(mypop[0].population.s, mypop[0].population.s+numOperators, opSort);
-		bestSid=mypop[0].population;
 		printf("Fitness:%f\n", mypop[0].fitness);
 		for(int c=0;c<numOperators;c++)
 		{
@@ -613,7 +616,7 @@ int main(int argc, char **argv) {
 		int genSmpl=0;
 		cycle=baseCycle;
 		for(int cframe=0;cframe<frameRange;cframe++) {
-			pushSid(bestSid, outSid, cframe);
+			pushSid(mypop[0].population, outSid, cframe);
 			cycle+=palFrame;
 			genSmpl+=outSid.clock(cycle, outputBuffer+genSmpl, 131072, 1);
 		}
@@ -623,8 +626,12 @@ int main(int argc, char **argv) {
 		fflush(fml);
 		fwrite(inputBuffer, sizeof(short), genSmpl, ref);
 		fflush(ref);
-		writeAsm(outasm, bestSid);
+		writeAsm(outasm, mypop[0].population);
 		fflush(outasm);
+		
+		// move the input window back
+		memmove(inputBuffer, inputBuffer+genSmpl, (windowSize-genSmpl)*sizeof(short));
+		bufferOffset-=genSmpl;
 	}
 
 
