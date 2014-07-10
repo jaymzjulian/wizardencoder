@@ -18,9 +18,7 @@
 
 #define MAXTHREADS 32
 #define MAXOPERATORS 32
-//#define MEASUREINDIVIDUAL
 //#define BENCHMARK (100/frameRange)
-#undef FUNKYCTRL
 
 
 // sensble defaults
@@ -31,9 +29,12 @@ int frameRange=1;
 int popSize=1024;
 int eliteSize=64;
 int numOperators=4*frameRange;
+int preWindowFrames=4;
 
 using namespace reSID;
 short *outputBuffer;
+int outBufferOffset;
+int workBufferOffset;
 short *inputBuffer;
 short *workBuffer[MAXTHREADS];
 float *loudMult;
@@ -56,18 +57,17 @@ int speedScale=1;
 
 #define PALFRAME 19656
 
-#ifndef MEASUREINDIVIDUAL
-	#define FRAMESAMPLES (879*frameRange)
-	#define FFTSAMPLES (((1024*frameRange)/speedScale))
-#else
-	#define FRAMESAMPLES (879)
-	#define FFTSAMPLES (((1024)/speedScale))
-#endif
-#define FFTSCALERATE ((256*FRAMESAMPLES)/FFTSAMPLES)
+#define FRAMESAMPLES (879*frameRange)
+// scale this down by speedScale
+#define FULLFFTSAMPLES (1024*frameRange*preWindowFrames)
+#define FFTSAMPLES (FULLFFTSAMPLES/speedScale)
+// this is scale _from speedscale reduced_
+#define FFTSCALERATE ((65536*FRAMESAMPLES)/FFTSAMPLES)
 
 int palFrame;
 fftw_complex *srcIn, *srcOut, *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
 fftw_plan srcPlan, dstPlan[MAXTHREADS];
+FILE *mmmm;
 
 #ifndef NOSR
 #define NUMCOMMANDS 5
@@ -95,7 +95,7 @@ const char *commandToString(int command) {
 		case set_ctrl: return "set_ctrl";
 		case set_pw: return "set_pw";
 	}
-
+	return "ERROR";
 }	
 
 
@@ -268,36 +268,46 @@ void fullyRandomPop(sidOutput &currentSid) {
 
 // Do the src FFT once
 void setupSrcGlobal() {
-#ifdef MEASUREINDIVIDUAL
-	for(int cframe=0;cframe<frameRange;cframe++)
-#endif
-	{
-		for(int c=0;c<FFTSAMPLES;c++) {
-#ifdef MEASUREINDIVIDUAL
-			srcIn[c][0]=((double)inputBuffer[(cframe*FRAMESAMPLES)+((c*FFTSCALERATE)>>8)])*inputAmp;
-#else
-			srcIn[c][0]=((double)inputBuffer[(c*FFTSCALERATE)>>8])*inputAmp;
-#endif
-			srcIn[c][1]=0;
-			// noramalise
-			srcIn[c][0]/=32768.0;
-		}
+	// input is 44100, output is 44100/speedScale - so, really, we need to multiply by 
+	// speedScale here.... if we got all of our #define's right, it all works out!
+	for(int c=0;c<FFTSAMPLES;c++) {
+		srcIn[c][0]=((double)inputBuffer[(c*FFTSCALERATE*speedScale)>>16])*inputAmp;
+		srcIn[c][1]=0;
+		// noramalise
+		srcIn[c][0]/=32768.0;
 	}
+	printf("Used %d samples", (FFTSAMPLES*FFTSCALERATE*speedScale)>>16);
 	fftw_execute(srcPlan);
 	// skip the DC offset - it'll be balls out wrong anyhow...
 	for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
 		srcOut[c][0]*=loudMult[c];
 		srcOut[c][1]*=loudMult[c];
 	}
+	
+	// we need to copy the pre-window from the rendered output buffer
+	// workBuffer is 44100, but of course we want this divided by speedscale if
+	// speedscale!=1 - but at 1, memcpy is way faster!
+	workBufferOffset=outBufferOffset/speedScale;
+	for(int t=0;t<omp_get_max_threads();t++)
+	{
+		if(speedScale==1)
+			memcpy(workBuffer[t], outputBuffer, outBufferOffset*sizeof(short));
+		else
+			for(int c=0;c<((FRAMESAMPLES*preWindowFrames)/speedScale);c++)
+				workBuffer[t][c]=outputBuffer[c*speedScale];
+	}
+	fwrite(inputBuffer+FRAMESAMPLES, sizeof(short), FRAMESAMPLES, mmmm);
+	fflush(mmmm);
 }
 
 double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
-	// IMPORTANT: push sid, THEN call resid!
 	int t=omp_get_thread_num();
-	int genSmpl=0;
+	int genSmpl=workBufferOffset;
 	int cycle=baseCycle;
 	double loss=0;
+
 	for(int cframe=0;cframe<frameRange;cframe++) {
+		// IMPORTANT: push sid, THEN call resid!
 		pushSid(currentSid, testSid, cframe);
 		cycle+=palFrame;
 		genSmpl+=testSid.clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
@@ -307,40 +317,30 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 	genSmpl+=testSid.clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
 
 	// compare samples because fuck everything
-#ifdef MEASUREINDIVIDUAL
-	for(int cframe=0;cframe<frameRange;cframe++)
-#endif
-	{
-		for(int c=0;c<FFTSAMPLES;c++) {
-#ifdef MEASUREINDIVIDUAL
-			dstIn[t][c][0]=workBuffer[t][(cframe*FRAMESAMPLES)+(((c*FFTSCALERATE)/speedScale)>>8)];
-#else
-			dstIn[t][c][0]=workBuffer[t][((c*FFTSCALERATE)/speedScale)>>8];
-#endif
+	for(int c=0;c<FFTSAMPLES;c++) {
+		dstIn[t][c][0]=workBuffer[t][((c*FFTSCALERATE)>>16)];
+		dstIn[t][c][1]=0;
 
-			dstIn[t][c][1]=0;
+		// normalise
+		dstIn[t][c][0]/=32768.0;
+	}
 
-			// normalise
-			dstIn[t][c][0]/=32768.0;
-		}
+	fftw_execute(dstPlan[t]);
 
-		fftw_execute(dstPlan[t]);
+	// skip the DC offset - it'll be balls out wrong anyhow...
+	for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
+		dstOut[t][c][0]*=loudMult[c];
+		dstOut[t][c][1]*=loudMult[c];
+		//double ia=sqrt(srcOut[t][c][0]*srcOut[t][c][0]+srcOut[t][c][1]*srcOut[t][c][1]);
+		//double ib=sqrt(dstOut[t][c][0]*dstOut[t][c][0]+dstOut[t][c][1]*dstOut[t][c][1]);
+		//double myLoss=(ia-ib);
+		//loss+=myLoss*myLoss;
 
-		// skip the DC offset - it'll be balls out wrong anyhow...
-		for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
-			dstOut[t][c][0]*=loudMult[c];
-			dstOut[t][c][1]*=loudMult[c];
-			//double ia=sqrt(srcOut[t][c][0]*srcOut[t][c][0]+srcOut[t][c][1]*srcOut[t][c][1]);
-			//double ib=sqrt(dstOut[t][c][0]*dstOut[t][c][0]+dstOut[t][c][1]*dstOut[t][c][1]);
-			//double myLoss=(ia-ib);
-			//loss+=myLoss*myLoss;
-
-			// This is wrong, but for some reason i think the
-			// other is too, so it can stay here as a comment
-			double ia=srcOut[c][0]-dstOut[t][c][0];
-			double ib=srcOut[c][1]-dstOut[t][c][1];
-			loss+=(ia*ia)+(ib*ib);
-		}
+		// This is wrong, but for some reason i think the
+		// other is too, so it can stay here as a comment
+		double ia=srcOut[c][0]-dstOut[t][c][0];
+		double ib=srcOut[c][1]-dstOut[t][c][1];
+		loss+=(ia*ia)+(ib*ib);
 	}
 	return loss;
 }
@@ -378,6 +378,7 @@ void calculateLoudness() {
 	{
 		float freq=44100.0/FFTSAMPLES;
 		freq*=c;
+		// speedscale drops freq buckets
 		freq/=speedScale;
 
 		int bm=0;
@@ -385,7 +386,7 @@ void calculateLoudness() {
 		// sizeof is the wrong tool here - the floats should be
 		// a vector, not an array :)
 		// also, this is terrible :)
-		for(int e=0;e<sizeof(freqTable)/sizeof(float);e++)
+		for(unsigned int e=0;e<(sizeof(freqTable)/sizeof(float));e++)
 		{
 			float fdif=fabs(freq-freqTable[e]);
 			if(fdif<d) {
@@ -420,7 +421,7 @@ int main(int argc, char **argv) {
 	}
 	
 	printf("Super algorythm codec v2 - %d threads\n", omp_get_max_threads());
-	printf("FFT: %d. Frame: %d\n", FFTSAMPLES, FRAMESAMPLES);
+	printf("FFT: %d. Frame: %d (LastSmpl: %d)\n", FFTSAMPLES, FRAMESAMPLES, (FFTSAMPLES*FFTSCALERATE)>>16);
 	printf("FFTSCALERATE: %d\n", FFTSCALERATE);
 
 	srcIn=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
@@ -428,18 +429,18 @@ int main(int argc, char **argv) {
 	srcPlan=fftw_plan_dft_1d(FFTSAMPLES, srcIn, srcOut, FFTW_FORWARD, FFTW_MEASURE);
 	for(int t=0;t<omp_get_max_threads();t++)
 	{
-	dstIn[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
-	dstOut[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
-	dstPlan[t]=fftw_plan_dft_1d(FFTSAMPLES, dstIn[t], dstOut[t], FFTW_FORWARD, FFTW_MEASURE);
-	workBuffer[t]=(short *)malloc(131072*sizeof(short));
+		dstIn[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
+		dstOut[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES);
+		dstPlan[t]=fftw_plan_dft_1d(FFTSAMPLES, dstIn[t], dstOut[t], FFTW_FORWARD, FFTW_MEASURE);
+		workBuffer[t]=(short *)calloc(131072,sizeof(short));
 	}
 
 	calculateLoudness();
 
 	palFrame=PALFRAME;
 
-	outputBuffer=(short *)malloc(131072*sizeof(short));
-	inputBuffer=(short *)malloc(131072*sizeof(short));
+	outputBuffer=(short *)calloc(131072,sizeof(short));
+	inputBuffer=(short *)calloc(131072,sizeof(short));
 
 	// time for a goddamned sid!
 	// we have two sid types we use - a test sid, configured to
@@ -468,27 +469,29 @@ int main(int argc, char **argv) {
 	FILE *inputFile=fopen(argv[1], "rb");
 	FILE *fml=fopen("output.raw", "wb");
 	FILE *ref=fopen("referece.raw", "wb");
+	mmmm=fopen("mmmm.raw", "wb");
 	FILE *outasm=fopen(argv[2], "wt");
 	//fseek(inputFile, 88200*10, 0);
 
 	int readLen;
 	int cycle=0;
 	int frameCount=0;
-	int bufferOffset=0;
-	int windowSize=FRAMESAMPLES*2;
+	// these are all 44100 buffers
+	int bufferOffset=(preWindowFrames-1)*FRAMESAMPLES;
+	outBufferOffset=(preWindowFrames-1)*FRAMESAMPLES;
+	int readWindow=FRAMESAMPLES*(preWindowFrames+1);
 #ifdef BENCHMARK
+	#error broken benchmarking!
 	while(readLen=fread(inputBuffer, sizeof(short), FRAMESAMPLES, inputFile) && frameCount<BENCHMARK) {
 #else
-	while(readLen=fread(inputBuffer+bufferOffset, sizeof(short), windowSize-bufferOffset, inputFile)) {
+	while((readLen=fread(inputBuffer+bufferOffset, sizeof(short), readWindow-bufferOffset, inputFile))) {
 #endif
 		bufferOffset+=readLen;
 		printf("Read: %d\n", readLen);
-		double bestLoss=9999999999;
+		printf("BufferTail: %d / %d\n", bufferOffset, outBufferOffset);
 		struct gpop mypop[popSize];
-		sidOutput currentSid;
 		SID::State baseState=outSid.read_state();
 		int baseCycle=cycle;
-		int allCtrls[4]={0x0,0x2,0x4,0x6};
 
 		// do the FFT and processing on the source
 		setupSrcGlobal();
@@ -502,31 +505,12 @@ int main(int argc, char **argv) {
 		}
 		
 		/* parallel test fitness */
-#pragma omp parallel for shared(baseState,mypop,testSid)
+#pragma omp parallel for shared(baseState,mypop,testSid,baseCycle)
 		for(int c=0;c<popSize;c++)
 		{
 			int t=omp_get_thread_num();
-#ifdef FUNKYCTRL
-			double bp=999999;
-			int cnum=0;
-			for(int ctype=0;ctype<3;ctype++) {
-				mypop[c].population.s.ctrl2&0xf9;
-				mypop[c].population.s.ctrl2|allCtrls[ctype];
-
-				testSid[t].write_state(baseState);
-				mypop[c].fitness=testFitness(testSid[t], mypop[c].population, baseCycle);
-				if(mypop[c].fitness < bp) {
-					cnum=ctype;
-					bp=mypop[c].fitness;
-				}
-			}
-			mypop[c].fitness=bp;
-			mypop[c].population.s.ctrl2&0xf9;
-			mypop[c].population.s.ctrl2|allCtrls[cnum];
-#else
 			testSid[t].write_state(baseState);
 			mypop[c].fitness=testFitness(testSid[t], mypop[c].population, baseCycle);
-#endif
 		}
 		
 
@@ -542,7 +526,7 @@ int main(int argc, char **argv) {
 			if(mypop[0].fitness < bf)
 			{
 				bf=mypop[0].fitness;
-				printf("BF: %f (%d) (%d)\n", bf, i, GSIZE);
+				printf("BF: %f (%d) (%ld)\n", bf, i, GSIZE);
 				//printf("%x\n", possibleCtrl[mypop[0].population.s.ctrl2%sizeof(possibleCtrl)]);
 				i=0;
 			}
@@ -550,12 +534,12 @@ int main(int argc, char **argv) {
 			// replace the bottom half - seperate this so it's non-parallel
 			for(int c=eliteSize;c<popSize;c++)
 			{
-				int splitPoint=rand()%(sizeof(sidOutput)*8);
+				unsigned int splitPoint=rand()%(sizeof(sidOutput)*8);
 				//int p1=rand()%popSize;
 				//int p2=rand()%popSize;
 				int p1=rand()%eliteSize;
 				int p2=rand()%eliteSize;
-				for(int bit=0;bit<GSIZE*8;bit++)
+				for(unsigned int bit=0;bit<GSIZE*8;bit++)
 				{
 					int cbyte=bit>>3;
 					int cbit=bit&7;
@@ -580,27 +564,8 @@ int main(int argc, char **argv) {
 			for(int c=eliteSize;c<popSize;c++)
 			{
 				int t=omp_get_thread_num();
-#ifdef FUNKYCTRL
-				double bp=999999;
-				int cnum=0;
-				for(int ctype=0;ctype<3;ctype++) {
-					mypop[c].population.s.ctrl2&0xf9;
-					mypop[c].population.s.ctrl2|allCtrls[ctype];
-
-					testSid[t].write_state(baseState);
-					mypop[c].fitness=testFitness(testSid[t], mypop[c].population, baseCycle);
-					if(mypop[c].fitness < bp) {
-						cnum=ctype;
-						bp=mypop[c].fitness;
-					}
-				}
-				mypop[c].fitness=bp;
-				mypop[c].population.s.ctrl2&0xf9;
-				mypop[c].population.s.ctrl2|allCtrls[cnum];
-#else
 				testSid[t].write_state(baseState);
 				mypop[c].fitness=testFitness(testSid[t], mypop[c].population, baseCycle);
-#endif
 			}
 			/* parallel ends here! */
 		}
@@ -623,26 +588,32 @@ int main(int argc, char **argv) {
 		}
 
 		frameCount++;
-		outSid.write_state(baseState);
 		int genSmpl=0;
 		cycle=baseCycle;
 		for(int cframe=0;cframe<frameRange;cframe++) {
 			pushSid(mypop[0].population, outSid, cframe);
 			cycle+=palFrame;
-			genSmpl+=outSid.clock(cycle, outputBuffer+genSmpl, 131072, 1);
+			genSmpl+=outSid.clock(cycle, outputBuffer+(genSmpl+outBufferOffset), 131072, 1);
 		}
+		outBufferOffset+=genSmpl;
 
+		// write our buffers from the current position of read, rather
+		// than the head
 		printf("Generated %d samples (%d)\n", genSmpl, frameCount*2*frameRange);
-		fwrite(outputBuffer, sizeof(short), genSmpl, fml);
+		fwrite(outputBuffer+(outBufferOffset-genSmpl), sizeof(short), genSmpl, fml);
 		fflush(fml);
-		fwrite(inputBuffer, sizeof(short), genSmpl, ref);
+		fwrite(inputBuffer+(preWindowFrames-1)*FRAMESAMPLES, sizeof(short), genSmpl, ref);
 		fflush(ref);
 		writeAsm(outasm, mypop[0].population);
 		fflush(outasm);
 		
 		// move the input window back
-		memmove(inputBuffer, inputBuffer+genSmpl, (windowSize-genSmpl)*sizeof(short));
+		memmove(inputBuffer, inputBuffer+genSmpl, (readWindow-genSmpl)*sizeof(short));
 		bufferOffset-=genSmpl;
+		
+		// move the output window back
+		memmove(outputBuffer, outputBuffer+genSmpl, (outBufferOffset-genSmpl)*sizeof(short));
+		outBufferOffset-=genSmpl;
 	}
 
 
