@@ -29,7 +29,7 @@ int frameRange=1;
 int popSize=1024;
 int eliteSize=64;
 int numOperators=4*frameRange;
-int preWindowFrames=1;
+int preWindowFrames=4;
 
 using namespace reSID;
 short *outputBuffer;
@@ -48,21 +48,23 @@ int speedScale=1;
 
 
 
-#define FREQSCALE 3
-
 #define THROWAWAY (popSize-eliteSize)
 
 #define GSIZE (numOperators*sizeof(struct so))
 
 
 #define PALFRAME 19656
+#define SINGLEFS 879
+#define SHORTFS 878
 
-#define FRAMESAMPLES (879*frameRange)
+#define FRAMESAMPLES (SINGLEFS*frameRange)
+#define SHORTSAMPLES (SHORTFS*frameRange)
 // scale this down by speedScale
+//#define FULLFFTSAMPLES (1024*frameRange*preWindowFrames)
 #define FULLFFTSAMPLES (1024*frameRange*preWindowFrames)
 #define FFTSAMPLES (FULLFFTSAMPLES/speedScale)
-// this is scale _from speedscale reduced_
-#define FFTSCALERATE ((65536*FRAMESAMPLES)/FFTSAMPLES)
+// this is scale _from spe879 reduced_
+#define FFTSCALERATE ((65536*SHORTFS*preWindowFrames*speedScale)/FULLFFTSAMPLES)
 
 int palFrame;
 fftw_complex *srcIn, *srcOut, *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
