@@ -55,7 +55,7 @@ int speedScale=1;
 
 #define PALFRAME 19656
 #define SINGLEFS 879
-#define SHORTFS 878
+#define SHORTFS 870
 
 #define FRAMESAMPLES (SINGLEFS*frameRange)
 #define SHORTSAMPLES (SHORTFS*frameRange)
@@ -64,7 +64,7 @@ int speedScale=1;
 #define FULLFFTSAMPLES (1024*frameRange*preWindowFrames)
 #define FFTSAMPLES (FULLFFTSAMPLES/speedScale)
 // this is scale _from spe879 reduced_
-#define FFTSCALERATE ((65536*SHORTFS*preWindowFrames*speedScale)/FULLFFTSAMPLES)
+#define FFTSCALERATE ((65536*SHORTFS*preWindowFrames*frameRange)/FULLFFTSAMPLES)
 
 int palFrame;
 fftw_complex *srcIn, *srcOut, *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
@@ -273,12 +273,12 @@ void setupSrcGlobal() {
 	// input is 44100, output is 44100/speedScale - so, really, we need to multiply by 
 	// speedScale here.... if we got all of our #define's right, it all works out!
 	for(int c=0;c<FFTSAMPLES;c++) {
-		srcIn[c][0]=((double)inputBuffer[(c*FFTSCALERATE*speedScale)>>16])*inputAmp;
+		srcIn[c][0]=((double)inputBuffer[(c*(FFTSCALERATE*speedScale))>>16])*inputAmp;
 		srcIn[c][1]=0;
 		// noramalise
 		srcIn[c][0]/=32768.0;
 	}
-	printf("Used %d samples", (FFTSAMPLES*FFTSCALERATE*speedScale)>>16);
+	printf("Used %d samples", (FFTSAMPLES*(FFTSCALERATE*speedScale))>>16);
 	fftw_execute(srcPlan);
 	// skip the DC offset - it'll be balls out wrong anyhow...
 	for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
@@ -326,6 +326,7 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 		// normalise
 		dstIn[t][c][0]/=32768.0;
 	}
+	//printf("%d\n", (FFTSAMPLES*FFTSCALERATE)>>16);
 
 	fftw_execute(dstPlan[t]);
 
@@ -359,6 +360,8 @@ static int handler(void *user, const char *section, const char *name, const char
 		inputAmp=atof(value);
 	else if(MATCH("encoder", "frameRange"))
 		frameRange=atoi(value);
+	else if(MATCH("encoder", "windowSize"))
+		preWindowFrames=atoi(value);
 	else if(MATCH("encoder", "numChannels"))
 		numChannels=atoi(value);
 	else if(MATCH("encoder", "numOperators"))
