@@ -29,7 +29,7 @@ int frameRange=1;
 int popSize=1024;
 int eliteSize=64;
 int numOperators=4*frameRange;
-int preWindowFrames=4;
+int preWindowFrames=1;
 
 using namespace reSID;
 short *outputBuffer;
