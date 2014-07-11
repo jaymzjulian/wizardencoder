@@ -369,7 +369,7 @@ public:
   // SID audio output (16 bits).
   short output();
 
-protected:
+//protected:
   void set_sum_mix();
   void set_w0();
   void set_Q();
