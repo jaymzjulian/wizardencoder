@@ -36,6 +36,7 @@ int eliteSize=64;
 int numOperators=4*frameRange;
 int preWindowFrames=4;
 int updateTime=1;
+int simpleChannels=0;
 
 using namespace reSID;
 short *outputBuffer;
@@ -106,12 +107,12 @@ const char *commandToString(int command) {
 
 
 typedef unsigned char byte;
-	struct so {
-		byte frame ;
-		byte channel ;
-		byte command ;
-		byte value ;
-	};
+struct so {
+	byte frame;
+	byte channel;
+	byte command;
+	byte value;
+};
 
 // we're going to pack the shit out of this instead
 // FIXME: obviously, this should not be statically defined,
@@ -158,7 +159,7 @@ void writeAsm(FILE *outasm, sidOutput o)
 	}
 }
 
-void pushSid(sidOutput o, SID &testSid, int f)
+void pushSid(sidOutput o, SID *testSid, int f)
 {
 	for(int c=0;c<numOperators;c++)
 	{
@@ -170,36 +171,37 @@ void pushSid(sidOutput o, SID &testSid, int f)
 		int cfreq;
 		switch(command) {
 			case set_ad:
-				testSid.write(5+baseChannel*7, val);
+				testSid->write(5+baseChannel*7, val);
 				break;
 #ifndef NOSR
 			case set_sr:
-				testSid.write(6+baseChannel*7, val);
+				testSid->write(6+baseChannel*7, val);
 				break;
 #endif
 			case set_pw:
-				testSid.write(3+baseChannel*7, val>>4);
-				testSid.write(2+baseChannel*7, (val<<4)&255);
+				val=128;
+				testSid->write(3+baseChannel*7, val>>4);
+				testSid->write(2+baseChannel*7, (val<<4)&255);
 				break;
 			case set_freq:
-				igate=testSid.voice[baseChannel].wave.waveform;
+				igate=testSid->voice[baseChannel].wave.waveform;
 				cfreq=sidFreq[val];
 				if(igate==1)
 					cfreq*=2;
 				if(cfreq>65535)
 					cfreq=65535;
 
-				testSid.write(0+baseChannel*7, cfreq&255);
-				testSid.write(1+baseChannel*7, cfreq>>8);
+				testSid->write(0+baseChannel*7, cfreq&255);
+				testSid->write(1+baseChannel*7, cfreq>>8);
 				break;
 			case set_ctrl:
 				// only allow modulation in channel 2!
 				int realGate;
-				if(baseChannel==0)
+				if(baseChannel<simpleChannels)
 					realGate=simpleCtrl[val%sizeof(simpleCtrl)];
 				else
 					realGate=possibleCtrl[val%sizeof(possibleCtrl)];
-				testSid.write(4+baseChannel*7, realGate);
+				testSid->write(4+baseChannel*7, realGate);
 				break;
 			default:
 				printf("INVALID SID COMMAND: %d\n", command);
@@ -221,7 +223,7 @@ bool opSort(struct so a, struct so b)
 void filterSingle(sidOutput &currentSid, int c) {
 		if(currentSid.s[c].command==set_ctrl)
 		{
-			if(currentSid.s[c].channel==0)
+			if(currentSid.s[c].channel<simpleChannels)
 				currentSid.s[c].value%=sizeof(simpleCtrl);
 			else
 				currentSid.s[c].value%=sizeof(possibleCtrl);
@@ -283,6 +285,7 @@ void setupSrcGlobal() {
 		srcIn[c][0]/=32768.0;
 	}
 	printf("Samples per frame: %d/%d\n", FRAMESAMPLES, preWindowFrames);
+	printf("Samples per fft: %d/%d\n", FFTSAMPLES, preWindowFrames);
 	printf("Used %d samples\n", (FFTSAMPLES*(FFTSCALERATE*speedScale))>>16);
 	printf("Cmp %d samples\n", (FFTSAMPLES*FFTSCALERATE)>>16);
 	fftw_execute(srcPlan);
@@ -308,7 +311,7 @@ void setupSrcGlobal() {
 	fflush(mmmm);
 }
 
-double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
+double testFitness(SID *testSid, sidOutput currentSid, int baseCycle) {
 	int t=omp_get_thread_num();
 	int genSmpl=workBufferOffset;
 	int cycle=baseCycle;
@@ -318,11 +321,11 @@ double testFitness(SID &testSid, sidOutput currentSid, int baseCycle) {
 		// IMPORTANT: push sid, THEN call resid!
 		pushSid(currentSid, testSid, cframe);
 		cycle+=palFrame;
-		genSmpl+=testSid.clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
+		genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
 	}
 	// some extra, just in case - more window is good window :)
 	cycle+=(palFrame/4);
-	genSmpl+=testSid.clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
+	genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
 
 	// compare samples because fuck everything
 	for(int c=0;c<FFTSAMPLES;c++) {
@@ -458,28 +461,41 @@ int main(int argc, char **argv) {
 	// time for a goddamned sid!
 	// we have two sid types we use - a test sid, configured to
 	// be fast, and a normal sid that is configued to be good
-	SID testSid[MAXTHREADS];
+	SID *testSid[MAXTHREADS];
 	for(int t=0;t<omp_get_max_threads();t++)
 	{
-	testSid[t].enable_filter(false);
-	testSid[t].reset();
-	testSid[t].set_sampling_parameters(985248, SAMPLE_FAST, 44100/speedScale);
-	testSid[t].write(3, 0x08);
-	testSid[t].write(3+7, 0x08);
-	testSid[t].write(0x18, 15);
+	testSid[t]=new SID();
+#if 0
+	testSid[t]->set_chip_model(MOS8580);
+	testSid[t]->set_voice_mask(0x0f);
+#endif
+	testSid[t]->input(0);
+	testSid[t]->enable_filter(false);
+	testSid[t]->enable_external_filter(false);
+	testSid[t]->set_sampling_parameters(985248, SAMPLE_FAST, 44100/speedScale);
+	testSid[t]->reset();
+	for(int c=0;c<32;c++)
+		testSid[t]->write(c, 0);
+	testSid[t]->write(0x18, 15);
 	cycle=palFrame*50;
-	testSid[t].clock(cycle, workBuffer[t], 131072, 1);
+	testSid[t]->clock(cycle, workBuffer[t], 131072, 1);
 	}
 
-	SID outSid;
-	outSid.enable_filter(false);
-	outSid.reset();
-	outSid.set_sampling_parameters(985248, SAMPLE_FAST, 44100);
-	outSid.write(3, 0x08);
-	outSid.write(3+7, 0x08);
-	outSid.write(0x18, 15);
+	SID *outSid=new SID();
+#if 0
+	outSid->set_chip_model(MOS8580);
+	outSid->set_voice_mask(0x0f);
+#endif
+	outSid->input(0);
+	outSid->enable_filter(false);
+	outSid->enable_external_filter(false);
+	outSid->set_sampling_parameters(985248, SAMPLE_FAST, 44100);
+	outSid->reset();
+	for(int c=0;c<32;c++)
+		outSid->write(c, 0);
+	outSid->write(0x18, 15);
 	cycle=palFrame*50;
-	outSid.clock(cycle, outputBuffer, 131072, 1);
+	outSid->clock(cycle, outputBuffer, 131072, 1);
 
 
 	//FILE *inputFile=fopen("harry.raw", "rb");
@@ -508,7 +524,7 @@ int main(int argc, char **argv) {
 		printf("BufferTail: %d / %d\n", bufferOffset, outBufferOffset);
 		struct gpop mypop[popSize];
 		int baseCycle=cycle;
-		SID::State baseState=outSid.read_state();
+		SID::State baseState=outSid->read_state();
 
 		// do the FFT and processing on the source
 		setupSrcGlobal();
@@ -526,7 +542,7 @@ int main(int argc, char **argv) {
 		for(int c=0;c<popSize;c++)
 		{
 			int t=omp_get_thread_num();
-			testSid[t].write_state(baseState);
+			testSid[t]->write_state(baseState);
 			mypop[c].fitness=testFitness(testSid[t], mypop[c].population, baseCycle);
 		}
 		
@@ -552,10 +568,10 @@ int main(int argc, char **argv) {
 			for(int c=eliteSize;c<popSize;c++)
 			{
 				unsigned int splitPoint=rand()%(sizeof(sidOutput)*8);
-				//int p1=rand()%popSize;
-				//int p2=rand()%popSize;
-				int p1=rand()%eliteSize;
-				int p2=rand()%eliteSize;
+				int p1=rand()%popSize;
+				int p2=rand()%popSize;
+				//int p1=rand()%eliteSize;
+				//int p2=rand()%eliteSize;
 				for(unsigned int bit=0;bit<GSIZE*8;bit++)
 				{
 					int cbyte=bit>>3;
@@ -581,7 +597,7 @@ int main(int argc, char **argv) {
 			for(int c=eliteSize;c<popSize;c++)
 			{
 				int t=omp_get_thread_num();
-				testSid[t].write_state(baseState);
+				testSid[t]->write_state(baseState);
 				mypop[c].fitness=testFitness(testSid[t], mypop[c].population, baseCycle);
 			}
 			/* parallel ends here! */
@@ -596,7 +612,7 @@ int main(int argc, char **argv) {
 			int cval=mypop[0].population.s[c].value;
 			if(mypop[0].population.s[c].command == set_ctrl)
 			{
-				if(mypop[0].population.s[c].channel==0)
+				if(mypop[0].population.s[c].channel<simpleChannels)
 					cval=simpleCtrl[cval];
 				else
 					cval=possibleCtrl[cval];
@@ -611,10 +627,10 @@ int main(int argc, char **argv) {
 		for(int cframe=0;cframe<frameRange;cframe++) {
 			pushSid(mypop[0].population, outSid, cframe);
 			cycle+=palFrame;
-			genSmpl+=outSid.clock(cycle, outputBuffer+(genSmpl+outBufferOffset), 131072, 1);
+			genSmpl+=outSid->clock(cycle, outputBuffer+(genSmpl+outBufferOffset), 131072, 1);
 		}
 		outBufferOffset+=genSmpl;
-		printf("VOL REG: %x\n", outSid.filter.vol);
+		printf("VOL REG: %x\n", outSid->filter.vol);
 
 		// write our buffers from the current position of read, rather
 		// than the head

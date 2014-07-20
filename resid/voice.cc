@@ -90,7 +90,9 @@ void Voice::set_chip_model(chip_model model)
     // * The full range of one voice is approximately 1.5V.
     // * The "zero" level rides at approximately 5.0V.
     //
-    wave_zero = 0x380;
+    //wave_zero = 0x380;
+    // JJ - this breaks fitness, so for now make sid wave_zero to be 0DC
+    wave_zero = 0x800;
   }
   else {
     // No DC offsets in the MOS8580.
