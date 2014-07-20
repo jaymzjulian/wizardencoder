@@ -40,7 +40,7 @@ public:
   // Range [-2048*255, 2047*255].
   RESID_INLINE float output(WaveformGeneratorFP& source);
 
-protected:
+//protected:
   WaveformGeneratorFP wave;
   EnvelopeGeneratorFP envelope;
 

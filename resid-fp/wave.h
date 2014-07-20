@@ -54,7 +54,7 @@ public:
 
   RESID_INLINE float output(WaveformGeneratorFP& source);
 
-protected:
+//protected:
   reg8 readOSC(reg24 ring_accumulator, reg24 my_accumulator);
 
   void clock_noise(const bool clock);

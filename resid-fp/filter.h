@@ -143,7 +143,7 @@ public:
   void writeRES_FILT(reg8);
   void writeMODE_VOL(reg8);
 
-private:
+//private:
   void set_Q();
   void set_w0();
   float type3_w0(const float dist);

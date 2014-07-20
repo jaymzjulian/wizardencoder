@@ -84,7 +84,7 @@ public:
   // 16-bit output (AUDIO OUT)
   float output();
 
-protected:
+//protected:
   static double I0(double x);
   RESID_INLINE int clock_interpolate(cycle_count& delta_t, short* buf, int n,
                                      int interleave);

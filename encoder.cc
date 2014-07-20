@@ -7,13 +7,13 @@
 #include <iostream>
 #include <algorithm>
 
+
 #ifdef USE_OPENMP
 #include <omp.h>
 #else
 int omp_get_max_threads() { return 1; }
 int omp_get_thread_num() { return 0; }
 #endif
-#include "sid.h"
 #include "sidc.h"
 #include "loud.h"
 #include "ini.h"
@@ -26,6 +26,16 @@ int omp_get_thread_num() { return 0; }
 //#define BENCHMARK (100/frameRange)
 
 
+#define USE_RESID
+#ifdef USE_RESID
+#include "resid/sid.h"
+using namespace reSID;
+#define SAMPLETYPE SAMPLE_FAST
+#else
+#include "resid-fp/sid.h"
+#define SID SIDFP
+#define SAMPLETYPE SAMPLE_INTERPOLATE
+#endif
 // sensble defaults
 int numChannels=3;
 int maxIter=2;
@@ -38,12 +48,11 @@ int preWindowFrames=4;
 int updateTime=1;
 int simpleChannels=0;
 
-using namespace reSID;
-short *outputBuffer;
+signed short *outputBuffer;
 int outBufferOffset;
 int workBufferOffset;
-short *inputBuffer;
-short *workBuffer[MAXTHREADS];
+signed short *inputBuffer;
+signed short *workBuffer[MAXTHREADS];
 float *loudMult;
 
 // Benchtime:
@@ -278,16 +287,24 @@ void fullyRandomPop(sidOutput &currentSid) {
 void setupSrcGlobal() {
 	// input is 44100, output is 44100/speedScale - so, really, we need to multiply by 
 	// speedScale here.... if we got all of our #define's right, it all works out!
+	float srcMax=0-32768.0;
+	float srcMin= 32768.0;
 	for(int c=0;c<FFTSAMPLES;c++) {
 		srcIn[c][0]=((double)inputBuffer[(c*(FFTSCALERATE*speedScale))>>16])*inputAmp;
 		srcIn[c][1]=0;
-		// noramalise
-		srcIn[c][0]/=32768.0;
+		if(srcMax<srcIn[c][0])
+			srcMax=srcIn[c][0];
+		if(srcMin>srcIn[c][0])
+			srcMin=srcIn[c][0];
 	}
+	float srcCentre=(srcMax+srcMin)/2.0;
+	for(int c=0;c<FFTSAMPLES;c++) 
+		srcIn[c][0]-=srcCentre;
 	printf("Samples per frame: %d/%d\n", FRAMESAMPLES, preWindowFrames);
 	printf("Samples per fft: %d/%d\n", FFTSAMPLES, preWindowFrames);
 	printf("Used %d samples\n", (FFTSAMPLES*(FFTSCALERATE*speedScale))>>16);
 	printf("Cmp %d samples\n", (FFTSAMPLES*FFTSCALERATE)>>16);
+	printf("Centre: %f\n", srcCentre);
 	fftw_execute(srcPlan);
 	// skip the DC offset - it'll be balls out wrong anyhow...
 	for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
@@ -328,13 +345,22 @@ double testFitness(SID *testSid, sidOutput currentSid, int baseCycle) {
 	genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
 
 	// compare samples because fuck everything
+	float dstMax=0-32768.0;
+	float dstMin= 32768.0;
 	for(int c=0;c<FFTSAMPLES;c++) {
 		dstIn[t][c][0]=workBuffer[t][((c*FFTSCALERATE)>>16)];
 		dstIn[t][c][1]=0;
-
-		// normalise
-		dstIn[t][c][0]/=32768.0;
+		if(dstMax<dstIn[t][c][0])
+			dstMax=dstIn[t][c][0];
+		if(dstMin>dstIn[t][c][0])
+			dstMin=dstIn[t][c][0];
+			
 	}
+	float dstCentre=(dstMax+dstMin)/2.0;
+	for(int c=0;c<FFTSAMPLES;c++) {
+		dstIn[t][c][0]-=dstCentre;
+	}
+
 
 	fftw_execute(dstPlan[t]);
 
@@ -471,8 +497,8 @@ int main(int argc, char **argv) {
 #endif
 	testSid[t]->input(0);
 	testSid[t]->enable_filter(false);
-	testSid[t]->enable_external_filter(false);
-	testSid[t]->set_sampling_parameters(985248, SAMPLE_FAST, 44100/speedScale);
+	//testSid[t]->enable_external_filter(false);
+	testSid[t]->set_sampling_parameters(985248, SAMPLETYPE, 44100/speedScale);
 	testSid[t]->reset();
 	for(int c=0;c<32;c++)
 		testSid[t]->write(c, 0);
@@ -488,8 +514,8 @@ int main(int argc, char **argv) {
 #endif
 	outSid->input(0);
 	outSid->enable_filter(false);
-	outSid->enable_external_filter(false);
-	outSid->set_sampling_parameters(985248, SAMPLE_FAST, 44100);
+	//outSid->enable_external_filter(false);
+	outSid->set_sampling_parameters(985248, SAMPLETYPE, 44100);
 	outSid->reset();
 	for(int c=0;c<32;c++)
 		outSid->write(c, 0);
@@ -568,10 +594,10 @@ int main(int argc, char **argv) {
 			for(int c=eliteSize;c<popSize;c++)
 			{
 				unsigned int splitPoint=rand()%(sizeof(sidOutput)*8);
-				int p1=rand()%popSize;
-				int p2=rand()%popSize;
-				//int p1=rand()%eliteSize;
-				//int p2=rand()%eliteSize;
+				//int p1=rand()%popSize;
+				//int p2=rand()%popSize;
+				int p1=rand()%eliteSize;
+				int p2=rand()%eliteSize;
 				for(unsigned int bit=0;bit<GSIZE*8;bit++)
 				{
 					int cbyte=bit>>3;
@@ -635,7 +661,8 @@ int main(int argc, char **argv) {
 		// write our buffers from the current position of read, rather
 		// than the head
 		printf("Generated %d samples (%d)\n", genSmpl, frameCount*2*frameRange);
-		fwrite(outputBuffer+(outBufferOffset-genSmpl), sizeof(short), genSmpl, fml);
+		//fwrite(outputBuffer+(outBufferOffset-genSmpl), sizeof(short), genSmpl, fml);
+		fwrite(outputBuffer, sizeof(short), genSmpl, fml);
 		fflush(fml);
 		fwrite(inputBuffer+(preWindowFrames-1)*FRAMESAMPLES, sizeof(short), genSmpl, ref);
 		fflush(ref);
