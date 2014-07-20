@@ -35,6 +35,7 @@ int popSize=1024;
 int eliteSize=64;
 int numOperators=4*frameRange;
 int preWindowFrames=4;
+int updateTime=1;
 
 using namespace reSID;
 short *outputBuffer;
@@ -58,9 +59,9 @@ int speedScale=1;
 #define GSIZE (numOperators*sizeof(struct so))
 
 
-#define PALFRAME 19656
-#define SINGLEFS 879
-#define SHORTFS 870
+#define PALFRAME (19656*updateTime)
+#define SINGLEFS (879*updateTime)
+#define SHORTFS (870*updateTime)
 
 #define FRAMESAMPLES (SINGLEFS*frameRange)
 #define SHORTSAMPLES (SHORTFS*frameRange)
@@ -370,6 +371,8 @@ static int handler(void *user, const char *section, const char *name, const char
 		numChannels=atoi(value);
 	else if(MATCH("encoder", "numOperators"))
 		numOperators=atoi(value);
+	else if(MATCH("encoder", "updateTime"))
+		updateTime=atoi(value);
 	else if(MATCH("search", "popSize"))
 		popSize=atoi(value);
 	else if(MATCH("search", "eliteSize"))
@@ -630,6 +633,8 @@ int main(int argc, char **argv) {
 		// move the output window back
 		memmove(outputBuffer, outputBuffer+genSmpl, (outBufferOffset-genSmpl)*sizeof(short));
 		outBufferOffset-=genSmpl;
+		//if(frameCount==4)
+		//	exit(1);
 	}
 
 
