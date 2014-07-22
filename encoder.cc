@@ -53,7 +53,7 @@ int outBufferOffset;
 int workBufferOffset;
 signed short *inputBuffer;
 signed short *workBuffer[MAXTHREADS];
-float *loudMult;
+double *loudMult;
 
 // Benchtime:
 // 13 seconds for '4'
@@ -160,6 +160,7 @@ void writeAsm(FILE *outasm, sidOutput o)
 				int baseChannel=o.s[c].channel;
 				int command=o.s[c].command;
 				int val=o.s[c].value;
+
 				// FIXME: double val if gate is currently 1x on this channel!
 				fprintf(outasm, ".byte %d, %d, %d\n", baseChannel, command, val);
 			}
@@ -287,8 +288,8 @@ void fullyRandomPop(sidOutput &currentSid) {
 void setupSrcGlobal() {
 	// input is 44100, output is 44100/speedScale - so, really, we need to multiply by 
 	// speedScale here.... if we got all of our #define's right, it all works out!
-	float srcMax=0-32768.0;
-	float srcMin= 32768.0;
+	double srcMax=0-32768.0;
+	double srcMin= 32768.0;
 	for(int c=0;c<FFTSAMPLES;c++) {
 		srcIn[c][0]=((double)inputBuffer[(c*(FFTSCALERATE*speedScale))>>16])*inputAmp;
 		srcIn[c][1]=0;
@@ -297,7 +298,7 @@ void setupSrcGlobal() {
 		if(srcMin>srcIn[c][0])
 			srcMin=srcIn[c][0];
 	}
-	float srcCentre=(srcMax+srcMin)/2.0;
+	double srcCentre=(srcMax+srcMin)/2.0;
 	for(int c=0;c<FFTSAMPLES;c++) 
 		srcIn[c][0]-=srcCentre;
 	printf("Samples per frame: %d/%d\n", FRAMESAMPLES, preWindowFrames);
@@ -345,10 +346,12 @@ double testFitness(SID *testSid, sidOutput currentSid, int baseCycle) {
 	genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
 
 	// compare samples because fuck everything
-	float dstMax=0-32768.0;
-	float dstMin= 32768.0;
+	double dstMax=0-32768.0;
+	double dstMin= 32768.0;
 	for(int c=0;c<FFTSAMPLES;c++) {
-		dstIn[t][c][0]=workBuffer[t][((c*FFTSCALERATE)>>16)];
+		// if this cast isn't here, the algorythm breaks.  why??!
+		// seriously, this should work...
+		dstIn[t][c][0]=(double)workBuffer[t][((c*FFTSCALERATE)>>16)];
 		dstIn[t][c][1]=0;
 		if(dstMax<dstIn[t][c][0])
 			dstMax=dstIn[t][c][0];
@@ -356,7 +359,7 @@ double testFitness(SID *testSid, sidOutput currentSid, int baseCycle) {
 			dstMin=dstIn[t][c][0];
 			
 	}
-	float dstCentre=(dstMax+dstMin)/2.0;
+	double dstCentre=(dstMax+dstMin)/2.0;
 	for(int c=0;c<FFTSAMPLES;c++) {
 		dstIn[t][c][0]-=dstCentre;
 	}
@@ -414,22 +417,22 @@ static int handler(void *user, const char *section, const char *name, const char
 }
 
 void calculateLoudness() {
-	loudMult=new float[FFTSAMPLES];
+	loudMult=new double[FFTSAMPLES];
 	for(int c=0;c<(FFTSAMPLES/2);c++)
 	{
-		float freq=44100.0/FFTSAMPLES;
+		double freq=44100.0/FFTSAMPLES;
 		freq*=c;
 		// speedscale drops freq buckets
 		freq/=speedScale;
 
 		int bm=0;
-		float d=999;
-		// sizeof is the wrong tool here - the floats should be
+		double d=999;
+		// sizeof is the wrong tool here - the doubles should be
 		// a vector, not an array :)
 		// also, this is terrible :)
-		for(unsigned int e=0;e<(sizeof(freqTable)/sizeof(float));e++)
+		for(unsigned int e=0;e<(sizeof(freqTable)/sizeof(double));e++)
 		{
-			float fdif=fabs(freq-freqTable[e]);
+			double fdif=fabs(freq-freqTable[e]);
 			if(fdif<d) {
 				d=fdif;
 				bm=e;
@@ -440,8 +443,8 @@ void calculateLoudness() {
 		
 		// for now, set our multiplier such that a 40db tone would be appropriate
 		// later we'll import something real!
-		float dbDif=loudnessDB[bm]-40.0;
-		float multiplier=pow(2, dbDif/10.0);
+		double dbDif=loudnessDB[bm]-40.0;
+		double multiplier=pow(2, dbDif/10.0);
 		multiplier=1.0/multiplier;
 		//printf("%f, %f\n", dbDif, multiplier);
 		loudMult[c]=multiplier;
@@ -520,7 +523,7 @@ int main(int argc, char **argv) {
 	for(int c=0;c<32;c++)
 		outSid->write(c, 0);
 	outSid->write(0x18, 15);
-	cycle=palFrame*50;
+	cycle=palFrame*100;
 	outSid->clock(cycle, outputBuffer, 131072, 1);
 
 
@@ -558,6 +561,9 @@ int main(int argc, char **argv) {
 		// do initial pop
 		for(int c=0;c<popSize;c++)
 		{
+			// this causes memory errors, so we're just
+			// not doing it this time - it makes vibrato harder
+			// to track though!
 			//if(frameCount==0 || c>THROWAWAY) {
 			fullyRandomPop(mypop[c].population);
 			//}
@@ -661,8 +667,8 @@ int main(int argc, char **argv) {
 		// write our buffers from the current position of read, rather
 		// than the head
 		printf("Generated %d samples (%d)\n", genSmpl, frameCount*2*frameRange);
-		//fwrite(outputBuffer+(outBufferOffset-genSmpl), sizeof(short), genSmpl, fml);
-		fwrite(outputBuffer, sizeof(short), genSmpl, fml);
+		fwrite(outputBuffer+(outBufferOffset-genSmpl), sizeof(short), genSmpl, fml);
+		//fwrite(outputBuffer, sizeof(short), genSmpl, fml);
 		fflush(fml);
 		fwrite(inputBuffer+(preWindowFrames-1)*FRAMESAMPLES, sizeof(short), genSmpl, ref);
 		fflush(ref);
