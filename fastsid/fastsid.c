@@ -42,9 +42,6 @@
 #define FALSE 0
 #endif
 
-/* use wavetables (sampled waveforms) */
-#define WAVETABLES
-
 /* ADSR state */
 #define ATTACK   0
 #define DECAY    1
@@ -185,7 +182,7 @@ inline void dofilter(voice_t *pVoice)
 
 /* 15-bit oscillator value */
 #ifdef WAVETABLES
-inline static DWORD doosc(voice_t *pv)
+inline DWORD doosc(voice_t *pv)
 {
     if (pv->noise)
 	return ((DWORD)NVALUE(NSHIFT(pv->rv, pv->f >> 28))) << 7;

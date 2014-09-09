@@ -48,6 +48,7 @@ int fastsid::clock(int &cycle, short *buffer, int maxsamples, int interleave) {
 }
 
 void fastsid::set_sampling_parameters(int cpufreq, int type, int sampleFreq) {
+	printf("FASTSID: clock=%d, sample=%d\n", cpufreq, sampleFreq);
 	clockspeed=cpufreq;
 	samplefreq=sampleFreq;
 	fastsid_init(&me.psid, sampleFreq, cpufreq);

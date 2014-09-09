@@ -62,6 +62,7 @@ int updateTime=1;
 int simpleChannels=0;
 
 signed short *outputBuffer;
+signed short *throwawayBuffer;
 int outBufferOffset;
 int workBufferOffset;
 signed short *inputBuffer;
@@ -530,6 +531,7 @@ int main(int argc, char **argv) {
 	palFrame=PALFRAME;
 
 	outputBuffer=(short *)calloc(DUMBARRAYSIZE,sizeof(short));
+	throwawayBuffer=(short *)calloc(DUMBARRAYSIZE,sizeof(short));
 	inputBuffer=(short *)calloc(DUMBARRAYSIZE,sizeof(short));
 
 	// time for a goddamned sid!
@@ -558,27 +560,42 @@ int main(int argc, char **argv) {
 	}
 
 	SID *outSid=new SID();
+	SID *lowresSid=new SID();
 #if 0
 	outSid->set_chip_model(MOS8580);
 	outSid->set_voice_mask(0x0f);
+	lowresSid->set_chip_model(MOS8580);
+	lowresSid->set_voice_mask(0x0f);
 #endif
 
 #ifndef USE_FASTSID
 	outSid->input(0);
 	outSid->enable_filter(false);
+	lowresSid->input(0);
+	lowresSid->enable_filter(false);
 #endif
 	//outSid->enable_external_filter(false);
 	outSid->set_sampling_parameters(985248, SAMPLETYPE, 44100);
 	outSid->reset();
+	lowresSid->set_sampling_parameters(985248, SAMPLETYPE, 44100/speedScale);
+	lowresSid->reset();
 	for(int c=0;c<32;c++)
+	{
+		lowresSid->write(c, 0);
 		outSid->write(c, 0);
+	}
 	outSid->write(0x18, 15);
+	lowresSid->write(0x18, 15);
 
 	// do this twice to nuke instabilities in resid startup
 	cycle=palFrame*100;
 	outSid->clock(cycle, outputBuffer, DUMBARRAYSIZE, 1);
 	cycle=palFrame*100;
+	lowresSid->clock(cycle, outputBuffer, DUMBARRAYSIZE, 1);
+	cycle=palFrame*100;
 	outSid->clock(cycle, outputBuffer, DUMBARRAYSIZE, 1);
+	cycle=palFrame*100;
+	lowresSid->clock(cycle, outputBuffer, DUMBARRAYSIZE, 1);
 
 
 	//FILE *inputFile=fopen("harry.raw", "rb");
@@ -607,7 +624,10 @@ int main(int argc, char **argv) {
 		printf("BufferTail: %d / %d\n", bufferOffset, outBufferOffset);
 		struct gpop mypop[popSize];
 		int baseCycle=cycle;
-		SID::State baseState=outSid->read_state();
+		// we get our base state from a sid in the same
+		// resolution as testsid, since some impls (like fastsid)
+		// have state dependent on freq
+		SID::State baseState=lowresSid->read_state();
 
 		// do the FFT and processing on the source
 		setupSrcGlobal();
@@ -709,9 +729,16 @@ int main(int argc, char **argv) {
 		frameCount++;
 		int genSmpl=0;
 		cycle=baseCycle;
+		int lcycle=baseCycle;
 		printf("basecyc:%d\n", baseCycle);
 		for(int cframe=0;cframe<frameRange;cframe++) {
 			pushSid(mypop[0].population, outSid, cframe);
+			pushSid(mypop[0].population, lowresSid, cframe);
+			// keep cycle/lcycle seperate, even though we're throwing it out, 
+			// since it's updated by reference
+			lcycle+=palFrame;
+			lowresSid->clock(lcycle, throwawayBuffer+(genSmpl+outBufferOffset), DUMBARRAYSIZE, 1);
+			// now the real one!
 			cycle+=palFrame;
 			genSmpl+=outSid->clock(cycle, outputBuffer+(genSmpl+outBufferOffset), DUMBARRAYSIZE, 1);
 		}
