@@ -18,6 +18,8 @@ int omp_get_thread_num() { return 0; }
 #include "loud.h"
 #include "ini.h"
 
+#define DUMBARRAYSIZE 131072
+
 #define DEDUPEOP
 //#define NOSR
 
@@ -25,17 +27,28 @@ int omp_get_thread_num() { return 0; }
 #define MAXOPERATORS 32
 //#define BENCHMARK (100/frameRange)
 
+#define USE_FASTSID
+#undef USE_RESID
+#undef USE_RESIDFP
 
-#define USE_RESID
 #ifdef USE_RESID
 #include "resid/sid.h"
 using namespace reSID;
 #define SAMPLETYPE SAMPLE_FAST
-#else
+#endif
+
+#ifdef USE_RESIDFP
 #include "resid-fp/sid.h"
 #define SID SIDFP
 #define SAMPLETYPE SAMPLE_INTERPOLATE
 #endif
+
+#ifdef USE_FASTSID
+#include "fastsid/wrapper.h"
+#define SID fastsid
+#define SAMPLETYPE 0
+#endif
+
 // sensble defaults
 int numChannels=3;
 int maxIter=2;
@@ -85,25 +98,29 @@ fftw_complex *srcIn, *srcOut, *dstIn[MAXTHREADS], *dstOut[MAXTHREADS];
 fftw_plan srcPlan, dstPlan[MAXTHREADS];
 FILE *mmmm;
 
-#ifndef NOSR
-#define NUMCOMMANDS 5
-#else
-#define NUMCOMMANDS 4
-#endif
+//#define NOSR
+//#define SRONLY
 
 enum commands {
+#ifndef SRONLY
 	set_ad,
+#endif
 #ifndef NOSR
 	set_sr,
 #endif
 	set_freq,
 	set_ctrl,
-	set_pw
+	set_pw,
+	last_command
 };
+
+#define NUMCOMMANDS (last_command)
 
 const char *commandToString(int command) {
 	switch(command) {
+#ifndef SRONLY
 		case set_ad: return "set_ad";
+#endif
 #ifndef NOSR
 		case set_sr: return "set_sr";
 #endif
@@ -180,10 +197,20 @@ void pushSid(sidOutput o, SID *testSid, int f)
 		int igate;
 		int cfreq;
 		switch(command) {
+#ifdef NOSR
+			case set_ad:
+				testSid->write(5+baseChannel*7, val&0xf0);
+				testSid->write(6+baseChannel*7, (val&0x0f)|0xf0);
+				break;
+#elif defined(SRONLY)
+			case set_sr:
+				testSid->write(5+baseChannel*7, 0x00);
+				testSid->write(6+baseChannel*7, val);
+				break;
+#else
 			case set_ad:
 				testSid->write(5+baseChannel*7, val);
 				break;
-#ifndef NOSR
 			case set_sr:
 				testSid->write(6+baseChannel*7, val);
 				break;
@@ -194,7 +221,11 @@ void pushSid(sidOutput o, SID *testSid, int f)
 				testSid->write(2+baseChannel*7, (val<<4)&255);
 				break;
 			case set_freq:
+#ifndef USE_FASTSID
 				igate=testSid->voice[baseChannel].wave.waveform;
+#else
+				igate=testSid->me.psid.v[baseChannel].d[4]>>4;
+#endif
 				cfreq=sidFreq[val];
 				if(igate==1)
 					cfreq*=2;
@@ -307,11 +338,6 @@ void setupSrcGlobal() {
 	printf("Cmp %d samples\n", (FFTSAMPLES*FFTSCALERATE)>>16);
 	printf("Centre: %f\n", srcCentre);
 	fftw_execute(srcPlan);
-	// skip the DC offset - it'll be balls out wrong anyhow...
-	for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
-		srcOut[c][0]*=loudMult[c];
-		srcOut[c][1]*=loudMult[c];
-	}
 	
 	// we need to copy the pre-window from the rendered output buffer
 	// workBuffer is 44100, but of course we want this divided by speedscale if
@@ -325,7 +351,7 @@ void setupSrcGlobal() {
 			for(int c=0;c<workBufferOffset;c++)
 				workBuffer[t][c]=outputBuffer[c*speedScale];
 	}
-	fwrite(workBuffer[0], sizeof(short), FRAMESAMPLES/speedScale, mmmm);
+	fwrite(outputBuffer, sizeof(short), outBufferOffset, mmmm);
 	fflush(mmmm);
 }
 
@@ -339,11 +365,11 @@ double testFitness(SID *testSid, sidOutput currentSid, int baseCycle) {
 		// IMPORTANT: push sid, THEN call resid!
 		pushSid(currentSid, testSid, cframe);
 		cycle+=palFrame;
-		genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
+		genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, DUMBARRAYSIZE, 1);
 	}
 	// some extra, just in case - more window is good window :)
 	cycle+=(palFrame/4);
-	genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, 131072, 1);
+	genSmpl+=testSid->clock(cycle, workBuffer[t]+genSmpl, DUMBARRAYSIZE, 1);
 
 	// compare samples because fuck everything
 	double dstMax=0-32768.0;
@@ -369,23 +395,32 @@ double testFitness(SID *testSid, sidOutput currentSid, int baseCycle) {
 
 	// skip the DC offset - it'll be balls out wrong anyhow...
 	for(int c=1;c<((FFTSAMPLES/2)-1);c++) {
-		dstOut[t][c][0]*=loudMult[c];
-		dstOut[t][c][1]*=loudMult[c];
-		//double ia=sqrt(srcOut[t][c][0]*srcOut[t][c][0]+srcOut[t][c][1]*srcOut[t][c][1]);
-		//double ib=sqrt(dstOut[t][c][0]*dstOut[t][c][0]+dstOut[t][c][1]*dstOut[t][c][1]);
-		//double myLoss=(ia-ib);
-		//loss+=myLoss*myLoss;
-
+#if 0
+		double ia=sqrt(srcOut[c][0]*srcOut[c][0]+srcOut[c][1]*srcOut[c][1]);
+		double ib=sqrt(dstOut[t][c][0]*dstOut[t][c][0]+dstOut[t][c][1]*dstOut[t][c][1]);
+		double smplLoss=(ia-ib);
+		smplLoss*=smplLoss;
+		smplLoss*=loudMult[c];
+#else
 		// This is wrong, but for some reason i think the
 		// other is too, so it can stay here as a comment
 		double ia=srcOut[c][0]-dstOut[t][c][0];
 		double ib=srcOut[c][1]-dstOut[t][c][1];
-		loss+=(ia*ia)+(ib*ib);
+		ia*=loudMult[c];
+		ib*=loudMult[c];
+		// Normalise output, to help the humans a little
+		ia/=FFTSAMPLES;
+		ib/=FFTSAMPLES;
+
+		// break this out, because reasons...
+		double smplLoss=((ia*ia)+(ib*ib));
+#endif
+		loss+=smplLoss;
 	}
 	return loss;
 }
 
-bool sfunc(struct gpop a, struct gpop b) {
+inline bool sfunc(struct gpop a, struct gpop b) {
 	return a.fitness < b.fitness;
 }
 
@@ -418,8 +453,9 @@ static int handler(void *user, const char *section, const char *name, const char
 
 void calculateLoudness() {
 	loudMult=new double[FFTSAMPLES];
-	for(int c=0;c<(FFTSAMPLES/2);c++)
+	for(int c=0;c<FFTSAMPLES;c++)
 	{
+#if 0
 		double freq=44100.0/FFTSAMPLES;
 		freq*=c;
 		// speedscale drops freq buckets
@@ -430,6 +466,7 @@ void calculateLoudness() {
 		// sizeof is the wrong tool here - the doubles should be
 		// a vector, not an array :)
 		// also, this is terrible :)
+		bm=(sizeof(freqTable)/sizeof(double))-1;
 		for(unsigned int e=0;e<(sizeof(freqTable)/sizeof(double));e++)
 		{
 			double fdif=fabs(freq-freqTable[e]);
@@ -438,17 +475,24 @@ void calculateLoudness() {
 				bm=e;
 			}
 		}
+		//printf("%d, %d, %d\n", sizeof(freqTable), sizeof(loudnessDB), bm);////
 
 		//printf("%f - %f\n", freq, freqTable[bm]);
 		
 		// for now, set our multiplier such that a 40db tone would be appropriate
 		// later we'll import something real!
-		double dbDif=loudnessDB[bm]-40.0;
-		double multiplier=pow(2, dbDif/10.0);
-		multiplier=1.0/multiplier;
-		//printf("%f, %f\n", dbDif, multiplier);
-		loudMult[c]=multiplier;
+		//double dbDif=loudnessDB[bm]-40.0;
+		//double multiplier=pow(2, dbDif/10.0);
+		//double multiplier=loudnessDB[bm]/40.0;
+		double multiplier=1.0;
+		//multiplier=sqrt(multiplier);
+		//printf("%f: %f, %f\n", freq, dbDif, multiplier);
+		loudMult[c]=1.0/multiplier;
+#else
+		loudMult[c]=1.0;
+#endif
 	}
+	//exit(1);
 }
 
 int main(int argc, char **argv) {
@@ -468,6 +512,7 @@ int main(int argc, char **argv) {
 	printf("Super algorythm codec v2 - %d threads\n", omp_get_max_threads());
 	printf("FFT: %d. Frame: %d (LastSmpl: %d)\n", FFTSAMPLES, FRAMESAMPLES, (FFTSAMPLES*FFTSCALERATE)>>16);
 	printf("FFTSCALERATE: %d\n", FFTSCALERATE);
+	printf("Possible commands: %d\n", NUMCOMMANDS);
 
 	srcIn=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES * 2);
 	srcOut=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES * 2);
@@ -477,15 +522,15 @@ int main(int argc, char **argv) {
 		dstIn[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES * 2);
 		dstOut[t]=(fftw_complex *)fftw_malloc(sizeof(fftw_complex) * FFTSAMPLES * 2);
 		dstPlan[t]=fftw_plan_dft_1d(FFTSAMPLES, dstIn[t], dstOut[t], FFTW_FORWARD, FFTW_MEASURE);
-		workBuffer[t]=(short *)calloc(131072,sizeof(short));
+		workBuffer[t]=(short *)calloc(DUMBARRAYSIZE,sizeof(short));
 	}
 
 	calculateLoudness();
 
 	palFrame=PALFRAME;
 
-	outputBuffer=(short *)calloc(131072,sizeof(short));
-	inputBuffer=(short *)calloc(131072,sizeof(short));
+	outputBuffer=(short *)calloc(DUMBARRAYSIZE,sizeof(short));
+	inputBuffer=(short *)calloc(DUMBARRAYSIZE,sizeof(short));
 
 	// time for a goddamned sid!
 	// we have two sid types we use - a test sid, configured to
@@ -498,8 +543,10 @@ int main(int argc, char **argv) {
 	testSid[t]->set_chip_model(MOS8580);
 	testSid[t]->set_voice_mask(0x0f);
 #endif
+#ifndef USE_FASTSID
 	testSid[t]->input(0);
 	testSid[t]->enable_filter(false);
+#endif
 	//testSid[t]->enable_external_filter(false);
 	testSid[t]->set_sampling_parameters(985248, SAMPLETYPE, 44100/speedScale);
 	testSid[t]->reset();
@@ -507,7 +554,7 @@ int main(int argc, char **argv) {
 		testSid[t]->write(c, 0);
 	testSid[t]->write(0x18, 15);
 	cycle=palFrame*50;
-	testSid[t]->clock(cycle, workBuffer[t], 131072, 1);
+	testSid[t]->clock(cycle, workBuffer[t], DUMBARRAYSIZE, 1);
 	}
 
 	SID *outSid=new SID();
@@ -515,16 +562,23 @@ int main(int argc, char **argv) {
 	outSid->set_chip_model(MOS8580);
 	outSid->set_voice_mask(0x0f);
 #endif
+
+#ifndef USE_FASTSID
 	outSid->input(0);
 	outSid->enable_filter(false);
+#endif
 	//outSid->enable_external_filter(false);
 	outSid->set_sampling_parameters(985248, SAMPLETYPE, 44100);
 	outSid->reset();
 	for(int c=0;c<32;c++)
 		outSid->write(c, 0);
 	outSid->write(0x18, 15);
+
+	// do this twice to nuke instabilities in resid startup
 	cycle=palFrame*100;
-	outSid->clock(cycle, outputBuffer, 131072, 1);
+	outSid->clock(cycle, outputBuffer, DUMBARRAYSIZE, 1);
+	cycle=palFrame*100;
+	outSid->clock(cycle, outputBuffer, DUMBARRAYSIZE, 1);
 
 
 	//FILE *inputFile=fopen("harry.raw", "rb");
@@ -659,10 +713,12 @@ int main(int argc, char **argv) {
 		for(int cframe=0;cframe<frameRange;cframe++) {
 			pushSid(mypop[0].population, outSid, cframe);
 			cycle+=palFrame;
-			genSmpl+=outSid->clock(cycle, outputBuffer+(genSmpl+outBufferOffset), 131072, 1);
+			genSmpl+=outSid->clock(cycle, outputBuffer+(genSmpl+outBufferOffset), DUMBARRAYSIZE, 1);
 		}
 		outBufferOffset+=genSmpl;
+#ifndef USE_FASTSID
 		printf("VOL REG: %x\n", outSid->filter.vol);
+#endif
 
 		// write our buffers from the current position of read, rather
 		// than the head
