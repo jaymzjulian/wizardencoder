@@ -1,3 +1,5 @@
+#define USE_LOUD
+#define USE_BUCKET
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -8,6 +10,7 @@
 #include <algorithm>
 
 
+#undef USE_FILTER
 #ifdef USE_OPENMP
 #include <omp.h>
 #else
@@ -18,7 +21,7 @@ int omp_get_thread_num() { return 0; }
 #include "loud.h"
 #include "ini.h"
 
-#define DUMBARRAYSIZE 131072
+#define DUMBARRAYSIZE 1310720
 
 #define DEDUPEOP
 //#define NOSR
@@ -68,6 +71,10 @@ int workBufferOffset;
 signed short *inputBuffer;
 signed short *workBuffer[MAXTHREADS];
 double *loudMult;
+double *bucketSize;
+bool useLoud=true;
+bool useBucket=false;
+bool complexSingle=false;
 
 // Benchtime:
 // 13 seconds for '4'
@@ -112,6 +119,10 @@ enum commands {
 	set_freq,
 	set_ctrl,
 	set_pw,
+#ifdef USE_FILTER
+	set_fl,
+	set_fh,
+#endif
 	last_command
 };
 
@@ -128,6 +139,10 @@ const char *commandToString(int command) {
 		case set_freq: return "set_freq";
 		case set_ctrl: return "set_ctrl";
 		case set_pw: return "set_pw";
+#ifdef USE_FILTER
+		case set_fl: return "set_fl";
+		case set_fh: return "set_fh";
+#endif
 	}
 	return "ERROR";
 }	
@@ -171,19 +186,33 @@ byte possibleCtrl[]={
 
 void writeAsm(FILE *outasm, sidOutput o)
 {
+	int nextPut = -1;
+	int nextVal = 0;
 	for(int cframe=0;cframe<frameRange;cframe++) {
 		for(int c=0;c<numOperators;c++)
 		{
 			if(o.s[c].frame==cframe){
+				if (nextPut!= -1)
+					fprintf(outasm, ".byte %d, %d\n", nextPut, nextVal);
+				
 				int baseChannel=o.s[c].channel;
 				int command=o.s[c].command;
 				int val=o.s[c].value;
 
 				// FIXME: double val if gate is currently 1x on this channel!
-				fprintf(outasm, ".byte %d, %d, %d\n", baseChannel, command, val);
+				//fprintf(outasm, ".byte %d, %d, %d\n", baseChannel, command, val);
+				// format for this:
+				// 1 bit "stop bit"
+				// 2 bits channel
+				// 4 bits command
+				nextPut = ((baseChannel<<4) | command);
+				nextVal=val;
 			}
 		}
-		fprintf(outasm, ".byte $ff\n");
+		if (nextPut!= -1)
+			fprintf(outasm, ".byte %d, %d\n", nextPut|0x80, nextVal);
+		else
+			fprintf(outasm, ".byte $ff");
 	}
 }
 
@@ -217,10 +246,14 @@ void pushSid(sidOutput o, SID *testSid, int f)
 				break;
 #endif
 			case set_pw:
-				val=128;
 				testSid->write(3+baseChannel*7, val>>4);
 				testSid->write(2+baseChannel*7, (val<<4)&255);
 				break;
+#ifdef USE_FILTER
+			case set_fl:
+				testSid->write(3+baseChannel*7, val>>4);
+				testSid->write(2+baseChannel*7, (val<<4)&255);
+#endif
 			case set_freq:
 #ifndef USE_FASTSID
 				igate=testSid->voice[baseChannel].wave.waveform;
@@ -324,6 +357,10 @@ void setupSrcGlobal() {
 	double srcMin= 32768.0;
 	for(int c=0;c<FFTSAMPLES;c++) {
 		srcIn[c][0]=((double)inputBuffer[(c*(FFTSCALERATE*speedScale))>>16])*inputAmp;
+		if(srcIn[c][0]>32767.0)
+			srcIn[c][0]=32767.0;
+		if(srcIn[c][0]< -32767.0)
+			srcIn[c][0]= -32767.0;
 		srcIn[c][1]=0;
 		if(srcMax<srcIn[c][0])
 			srcMax=srcIn[c][0];
@@ -407,8 +444,18 @@ double testFitness(SID *testSid, sidOutput currentSid, int baseCycle) {
 		// other is too, so it can stay here as a comment
 		double ia=srcOut[c][0]-dstOut[t][c][0];
 		double ib=srcOut[c][1]-dstOut[t][c][1];
+#ifdef USE_LOUD
+		if(useLoud) {
 		ia*=loudMult[c];
 		ib*=loudMult[c];
+		}
+#endif
+#ifdef USE_BUCKET
+		if(useBucket) {
+		ia*=bucketSize[c];
+		ib*=bucketSize[c];
+		}
+#endif
 		// Normalise output, to help the humans a little
 		ia/=FFTSAMPLES;
 		ib/=FFTSAMPLES;
@@ -447,16 +494,40 @@ static int handler(void *user, const char *section, const char *name, const char
 		eliteSize=atoi(value);
 	else if(MATCH("speedhacks", "speedScale"))
 		speedScale=atoi(value);
+	else if(MATCH("encoder", "useLoud"))
+		speedScale=atoi(value);
+	else if(MATCH("encoder", "useBuckets"))
+		speedScale=atoi(value);
+	else if(MATCH("encoder", "complexSingle"))
+		complexSingle=atoi(value);
 	else
 		return 0;
 	return 1;
 }
 
+double f2n(double f)
+{
+	return (12*log2(f/440.0))+57.0;
+}
+
 void calculateLoudness() {
 	loudMult=new double[FFTSAMPLES];
+	bucketSize=new double[FFTSAMPLES];
+
 	for(int c=0;c<FFTSAMPLES;c++)
 	{
-#if 0
+		double freq=44100.0/FFTSAMPLES;
+		double freqLo=freq*c;
+		double freqHi=freq*(c+1);
+		double linearLo=f2n(freqLo);
+		double linearHi=f2n(freqHi);
+		if(c==0)
+			linearLo=0;
+		bucketSize[c]=linearHi-linearLo;
+	}
+	for(int c=0;c<FFTSAMPLES;c++)
+	{
+#if 1
 		double freq=44100.0/FFTSAMPLES;
 		freq*=c;
 		// speedscale drops freq buckets
@@ -482,10 +553,8 @@ void calculateLoudness() {
 		
 		// for now, set our multiplier such that a 40db tone would be appropriate
 		// later we'll import something real!
-		//double dbDif=loudnessDB[bm]-40.0;
-		//double multiplier=pow(2, dbDif/10.0);
-		//double multiplier=loudnessDB[bm]/40.0;
-		double multiplier=1.0;
+		double dbDif=loudnessDB[bm]-40.0;
+		double multiplier=pow(2, dbDif/10.0);
 		//multiplier=sqrt(multiplier);
 		//printf("%f: %f, %f\n", freq, dbDif, multiplier);
 		loudMult[c]=1.0/multiplier;
@@ -547,7 +616,11 @@ int main(int argc, char **argv) {
 #endif
 #ifndef USE_FASTSID
 	testSid[t]->input(0);
+	#ifdef USE_FILTER
 	testSid[t]->enable_filter(false);
+	#else
+	testSid[t]->enable_filter(true);
+	#endif
 #endif
 	//testSid[t]->enable_external_filter(false);
 	testSid[t]->set_sampling_parameters(985248, SAMPLETYPE, 44100/speedScale);
@@ -613,6 +686,7 @@ int main(int argc, char **argv) {
 	int bufferOffset=(preWindowFrames-1)*FRAMESAMPLES;
 	outBufferOffset=(preWindowFrames-1)*FRAMESAMPLES;
 	int readWindow=FRAMESAMPLES*(preWindowFrames+1);
+	struct gpop *mypop=new struct gpop[popSize];
 #ifdef BENCHMARK
 	#error broken benchmarking!
 	while(readLen=fread(inputBuffer, sizeof(short), FRAMESAMPLES, inputFile) && frameCount<BENCHMARK) {
@@ -622,7 +696,6 @@ int main(int argc, char **argv) {
 		bufferOffset+=readLen;
 		printf("Read: %d\n", readLen);
 		printf("BufferTail: %d / %d\n", bufferOffset, outBufferOffset);
-		struct gpop mypop[popSize];
 		int baseCycle=cycle;
 		// we get our base state from a sid in the same
 		// resolution as testsid, since some impls (like fastsid)
