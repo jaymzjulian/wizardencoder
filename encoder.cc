@@ -10,7 +10,6 @@
 #include <algorithm>
 
 
-#undef USE_FILTER
 #ifdef USE_OPENMP
 #include <omp.h>
 #else
@@ -26,12 +25,15 @@ int omp_get_thread_num() { return 0; }
 #define DEDUPEOP
 //#define NOSR
 
-#define MAXTHREADS 32
-#define MAXOPERATORS 32
+#define MAXTHREADS 64
+#define MAXOPERATORS 64
 //#define BENCHMARK (100/frameRange)
 
-#define USE_FASTSID
-#undef USE_RESID
+// you really want residfp if you use this...
+#undef USE_FILTER
+
+#undef USE_FASTSID
+#define USE_RESID
 #undef USE_RESIDFP
 
 #ifdef USE_RESID
@@ -62,7 +64,7 @@ int eliteSize=64;
 int numOperators=4*frameRange;
 int preWindowFrames=4;
 int updateTime=1;
-int simpleChannels=0;
+int simpleChannels=1;
 
 signed short *outputBuffer;
 signed short *throwawayBuffer;
@@ -120,8 +122,8 @@ enum commands {
 	set_ctrl,
 	set_pw,
 #ifdef USE_FILTER
-	set_fl,
-	set_fh,
+	set_fv,
+	set_fb,
 #endif
 	last_command
 };
@@ -140,8 +142,8 @@ const char *commandToString(int command) {
 		case set_ctrl: return "set_ctrl";
 		case set_pw: return "set_pw";
 #ifdef USE_FILTER
-		case set_fl: return "set_fl";
-		case set_fh: return "set_fh";
+		case set_fv: return "set_fv";
+		case set_fb: return "set_fb";
 #endif
 	}
 	return "ERROR";
@@ -198,7 +200,14 @@ void writeAsm(FILE *outasm, sidOutput o)
 				int baseChannel=o.s[c].channel;
 				int command=o.s[c].command;
 				int val=o.s[c].value;
+				if(command==set_ctrl)
+				{
+				if(baseChannel<simpleChannels)
+					val=simpleCtrl[val%sizeof(simpleCtrl)];
+				else
+					val=possibleCtrl[val%sizeof(possibleCtrl)];
 
+				}
 				// FIXME: double val if gate is currently 1x on this channel!
 				//fprintf(outasm, ".byte %d, %d, %d\n", baseChannel, command, val);
 				// format for this:
@@ -250,10 +259,18 @@ void pushSid(sidOutput o, SID *testSid, int f)
 				testSid->write(2+baseChannel*7, (val<<4)&255);
 				break;
 #ifdef USE_FILTER
-			case set_fl:
-				testSid->write(3+baseChannel*7, val>>4);
-				testSid->write(2+baseChannel*7, (val<<4)&255);
+			case set_fv:
+				testSid->write(0x16, val);
+				break;
+			case set_fb:
+				if(val==0)
+					testSid->write(0x17, 0x0);
+				else
+					testSid->write(0x17, 0xff);
+				testSid->write(0x18, 0xf | ((val&7)<<4));
+				break;
 #endif
+
 			case set_freq:
 #ifndef USE_FASTSID
 				igate=testSid->voice[baseChannel].wave.waveform;
@@ -261,10 +278,11 @@ void pushSid(sidOutput o, SID *testSid, int f)
 				igate=testSid->me.psid.v[baseChannel].d[4]>>4;
 #endif
 				cfreq=sidFreq[val];
-				if(igate==1)
-					cfreq*=2;
-				if(cfreq>65535)
-					cfreq=65535;
+				// nuke this for now...
+				//if(igate==1)
+				//	cfreq*=2;
+				//if(cfreq>65535)
+				//	cfreq=65535;
 
 				testSid->write(0+baseChannel*7, cfreq&255);
 				testSid->write(1+baseChannel*7, cfreq>>8);
@@ -617,9 +635,9 @@ int main(int argc, char **argv) {
 #ifndef USE_FASTSID
 	testSid[t]->input(0);
 	#ifdef USE_FILTER
-	testSid[t]->enable_filter(false);
-	#else
 	testSid[t]->enable_filter(true);
+	#else
+	testSid[t]->enable_filter(false);
 	#endif
 #endif
 	//testSid[t]->enable_external_filter(false);
@@ -643,9 +661,15 @@ int main(int argc, char **argv) {
 
 #ifndef USE_FASTSID
 	outSid->input(0);
+	#ifdef USE_FILTER
+	outSid->enable_filter(true);
+	lowresSid->input(0);
+	lowresSid->enable_filter(true);
+	#else
 	outSid->enable_filter(false);
 	lowresSid->input(0);
 	lowresSid->enable_filter(false);
+	#endif
 #endif
 	//outSid->enable_external_filter(false);
 	outSid->set_sampling_parameters(985248, SAMPLETYPE, 44100);

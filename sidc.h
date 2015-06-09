@@ -1,4 +1,4 @@
-static int sidFreq[257]={
+static int sidFreq[256]={
 234 ,
 238 ,
 243 ,
@@ -254,5 +254,4 @@ static int sidFreq[257]={
 29970 ,
 30552 ,
 31146 ,
-31752 ,
-0};
+31752};
