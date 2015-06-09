@@ -1,8 +1,4 @@
 
-*=$3000
-
-inputdata=$fe
-
 getval	.macro
 	; then command
 	ldy #0
@@ -15,41 +11,43 @@ getval	.macro
 	pla
 .endmacro
 
+omgsingle
+	lda #0
+	sta samplePlaying
+	sta samplePlaying+1
+	sta samplePlaying+2
+	; initial sid as per encoder
+	lda #15
+	sta $d418
+	lda #8
+	sta $d403
+	;sta $d403+7
+	;sta $d403+14
+
+	lda #<ovmusic
+	sta inputdata
+	lda #>ovmusic
+	sta inputdata+1
+	rts
+
 omgponies
 	lda #0
-	sta $d020
-	sta $d021
-	lda #0
-	ldx #24
-sidResetLoop
-	sta $d400,x
-	dex
-	bne sidResetLoop
-
+	sta samplePlaying
+	sta samplePlaying+1
+	sta samplePlaying+2
 	; initial sid as per encoder
 	lda #15
 	sta $d418
 	lda #8
 	sta $d403
 	sta $d403+7
-	sta $d403+14
+	;sta $d403+14
 
 	lda #<alldata
 	sta inputdata
 	lda #>alldata
 	sta inputdata+1
-
-	; iterate through data!
-	ldy #0
-sidread
-	lda #$f3
-rasterloop
-	cmp $d012
-	bne rasterloop
-	inc $d020
-	jsr decodeloop
-	dec $d020
-	jmp sidread
+	rts
 
 decodeloop
 	; first channel - put the channel base into x
@@ -60,6 +58,8 @@ decodeloop
 	bne moreframe
 	rts
 moreframe
+	cmp #$fe
+	beq omgponies
 
 	getval
 	sta valtemp
@@ -89,10 +89,42 @@ moreframe
         beq set_ctrl
         cmp #4
         beq set_pw
+	cmp #5
+	beq set_fv
+	cmp #6
+	beq set_fb
+fmlloop
+	inc $d020
+	inc $d021
+	jmp fmlloop
+set_fv
+	lda valtemp
+	sta $d416
+	jmp finalise
+
+set_fb
+	lda valtemp
+	cmp #0
+	beq yeszero
+	; only filter channel #1 for now
+	lda #$f1
+	sta $d417
+	and #7
+	asl
+	asl
+	asl
+	asl
+	ora #$f
+	sta $d418
+yeszero
+	sta $d417
+	lda #$f
+	sta $d418
+	jmp finalise
 
 set_ctrl
-	ldy valtemp
-	lda ctrltab,y
+	lda valtemp
+	;lda ctrltab,y
 	sta $d404,x
 	jmp finalise
 
@@ -153,8 +185,6 @@ ctab
 
 	.include "freqtable.ass"
 
-alldata
-	.include "test.asm"
 
 ctrltab
 .byte	$10, $20, $40, $80
